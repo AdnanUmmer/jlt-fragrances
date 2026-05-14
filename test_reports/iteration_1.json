@@ -1,0 +1,45 @@
+{
+  "summary": "Comprehensive backend (pytest, 28 tests) and frontend (Playwright) testing of JLT Fragrances MVP. Backend 100% pass (catalog, filters, quiz, discovery sets, contact, reviews, JWT auth, admin CRUD, CSV import). Frontend critical flows all work: Home (8 bestsellers, mood/occasion chips, disclaimer), Shop (24 cards + filters), Product Detail (size selector, add-to-cart, wishlist), Quiz, Discovery Sets, Cart, Admin login → dashboard with product table + CSV import. 791 products auto-seeded from PDF correctly.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/admin/products PUT", "issue": "Update endpoint accepts ProductUpsert but does not regenerate slug or preserve sizes/base_price/rating; full replacement of those fields could be inconsistent. Not breaking currently."},
+      {"endpoint": "/api/quiz/recommend", "issue": "Fallback only filters by mood when results <3; could surface gender/projection mismatched items. Acceptable behavior but worth noting."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "AdminLogin", "issue": "Login button has data-testid='admin-submit' but lacks type='submit'. Pressing Enter inside email/password field does not submit the form (must click button). Minor UX issue.", "selector": "[data-testid='admin-submit']", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Shop page sort dropdown", "issues": ["React hydration warning: '<span> cannot be a child of <option>' in console — likely a styled <span> inside the sort <select><option>. Should use plain text inside <option>."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_jlt_api.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [
+    "Add type='submit' to admin login button so Enter key submits the form",
+    "Remove <span> wrappers inside <option> elements in Shop sort dropdown to fix React hydration warning",
+    "(Optional) PUT /api/admin/products/{slug} could $set only provided fields to avoid clobbering sizes/base_price"
+  ],
+  "critical_code_review_comments": [
+    "server.py is 411 lines — acceptable but approaching split threshold; consider extracting auth/admin routers if it grows.",
+    "JWT secret is committed in backend/.env (development convenience). For production, rotate via secret manager.",
+    "CORS_ORIGINS='*' combined with allow_credentials=True is technically invalid per CORS spec; browsers may reject credentialed requests. Tighten origins for prod.",
+    "No rate limiting on /api/auth/login — playbook requested brute-force lockout after 5 fails; currently not implemented.",
+    "Admin CRUD uses Bearer JWT in localStorage (XSS exposure). Acceptable for MVP but httpOnly cookies were the playbook recommendation.",
+    "Reviews endpoint does not validate product_slug exists before insert.",
+    "_id is correctly excluded in all read queries (good).",
+    "Product detail related-products query uses $or without index on combined fields — fine at 791 docs."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_jlt_api.py (created)"
+  ],
+  "success_rate": {"backend": "100% (28/28)", "frontend": "100% of tested critical flows"},
+  "test_credentials": "admin@jltfragrances.com / Admin@123 (verified working)",
+  "seed_data_creation": "Test inserted TEST_ prefixed contact, review, product, and CSV-imported products — all cleaned up by the CRUD test. One TEST_ contact + one TEST_ review remain in DB as expected (no delete endpoint exposed).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend pytest suite at /app/backend/tests/test_jlt_api.py covers all major endpoints. Admin login data-testids: admin-email-input, admin-password-input, admin-submit. Product card testid: product-card-{slug}. Mood/occasion testids prefixed mood-/occasion-. localStorage key for admin JWT is 'jlt_admin_token'. Brute-force lockout, httpOnly cookies, and CORS-origin tightening from playbook are NOT implemented — flag if main agent asks.",
+  "rca_of_admin_login_button": "Initial Playwright run used selector button[type='submit'] which returned None because the React JSX renders <button> without explicit type attribute (defaults to 'submit' inside <form> per HTML spec, but Playwright's CSS attribute selector requires the attribute to exist literally). Reusing data-testid='admin-submit' selector succeeded. Recommend adding type='submit' to satisfy both spec compliance and form submission via Enter key (currently not working because the button isn't recognized as a submit button by the browser when missing type, though this is browser-dependent)."
+}

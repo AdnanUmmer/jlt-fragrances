@@ -1,0 +1,190 @@
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --jlt-black: #0e0c0a;
+  --jlt-ivory: #f7f1e6;
+  --jlt-bone: #efe7d6;
+  --jlt-beige: #d9c9a8;
+  --jlt-gold: #b48a4a;
+  --jlt-gold-soft: #c9a86a;
+  --jlt-line: #2a2520;
+}
+
+html, body { background: var(--jlt-ivory); color: var(--jlt-black); }
+body {
+  margin: 0;
+  font-family: 'Outfit', 'Helvetica Neue', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.font-display { font-family: 'Cormorant Garamond', serif; letter-spacing: -0.01em; }
+.font-sans { font-family: 'Outfit', sans-serif; }
+
+.text-gold { color: var(--jlt-gold); }
+.bg-jlt-black { background: var(--jlt-black); }
+.bg-jlt-ivory { background: var(--jlt-ivory); }
+.bg-jlt-bone { background: var(--jlt-bone); }
+.bg-jlt-beige { background: var(--jlt-beige); }
+.bg-jlt-gold { background: var(--jlt-gold); }
+.border-jlt-gold { border-color: var(--jlt-gold); }
+.text-jlt-black { color: var(--jlt-black); }
+.text-jlt-ivory { color: var(--jlt-ivory); }
+.text-jlt-gold { color: var(--jlt-gold); }
+
+/* shadcn HSL vars (light theme tuned to ivory) */
+@layer base {
+  :root {
+    --background: 41 53% 94%;
+    --foreground: 30 25% 8%;
+    --card: 0 0% 100%;
+    --card-foreground: 30 25% 8%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 30 25% 8%;
+    --primary: 30 25% 8%;
+    --primary-foreground: 41 53% 94%;
+    --secondary: 38 35% 88%;
+    --secondary-foreground: 30 25% 8%;
+    --muted: 38 25% 90%;
+    --muted-foreground: 30 10% 35%;
+    --accent: 35 45% 50%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 70% 45%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 30 15% 80%;
+    --input: 30 15% 80%;
+    --ring: 35 45% 50%;
+    --radius: 0.25rem;
+  }
+}
+@layer base {
+  * { @apply border-border; }
+}
+
+/* Hero treatments */
+.hero-grad {
+  background:
+    radial-gradient(1200px 600px at 80% 10%, rgba(180,138,74,0.18), transparent 60%),
+    radial-gradient(900px 500px at 10% 90%, rgba(217,201,168,0.25), transparent 60%),
+    linear-gradient(180deg, #f7f1e6 0%, #efe7d6 100%);
+}
+
+.btn-primary {
+  background: var(--jlt-black);
+  color: var(--jlt-ivory);
+  padding: 0.85rem 1.6rem;
+  border: 1px solid var(--jlt-black);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: 0.78rem;
+  font-weight: 500;
+  transition: all 0.3s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.btn-primary:hover { background: var(--jlt-gold); border-color: var(--jlt-gold); color: white; }
+
+.btn-outline {
+  background: transparent;
+  color: var(--jlt-black);
+  padding: 0.85rem 1.6rem;
+  border: 1px solid var(--jlt-black);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: 0.78rem;
+  font-weight: 500;
+  transition: all 0.3s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.btn-outline:hover { background: var(--jlt-black); color: var(--jlt-ivory); }
+
+.divider-gold {
+  width: 60px; height: 1px; background: var(--jlt-gold); margin: 0.75rem auto;
+}
+
+/* Product bottle SVG card backgrounds */
+.bottle-card {
+  background: linear-gradient(160deg, #2a2520 0%, #0e0c0a 100%);
+  position: relative;
+  overflow: hidden;
+}
+.bottle-card::before {
+  content: ''; position: absolute; inset: 0;
+  background: radial-gradient(circle at 30% 20%, rgba(201,168,106,0.18), transparent 50%);
+}
+
+.shimmer-text {
+  background: linear-gradient(90deg, #b48a4a, #e8d4a8, #b48a4a);
+  background-size: 200% auto;
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer 5s linear infinite;
+}
+@keyframes shimmer { to { background-position: 200% center; } }
+
+.chip {
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  padding: 0.5rem 1rem;
+  border: 1px solid rgba(14,12,10,0.15);
+  border-radius: 999px;
+  background: white;
+  font-size: 0.82rem;
+  transition: all 0.25s ease;
+  cursor: pointer;
+}
+.chip:hover { border-color: var(--jlt-gold); background: var(--jlt-bone); }
+.chip-active { background: var(--jlt-black); color: var(--jlt-ivory); border-color: var(--jlt-black); }
+
+.marquee {
+  display: flex; gap: 3rem; animation: marquee 32s linear infinite;
+  white-space: nowrap;
+}
+@keyframes marquee { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+
+/* Image fallback bottle silhouette */
+.bottle-silhouette {
+  width: 70%; height: 80%;
+  background: linear-gradient(180deg, rgba(201,168,106,0.85) 0%, rgba(180,138,74,0.95) 100%);
+  border-radius: 8px 8px 18px 18px;
+  box-shadow: inset -6px -6px 18px rgba(0,0,0,0.25), inset 6px 6px 18px rgba(255,255,255,0.18);
+  position: relative;
+}
+.bottle-silhouette::before {
+  content: ''; position: absolute; top: -14%; left: 28%; right: 28%;
+  height: 14%; background: rgba(14,12,10,0.85); border-radius: 4px 4px 0 0;
+}
+
+.line-hover { position: relative; }
+.line-hover::after {
+  content: ''; position: absolute; left: 0; bottom: -3px; width: 0;
+  height: 1px; background: var(--jlt-gold); transition: width 0.35s ease;
+}
+.line-hover:hover::after { width: 100%; }
+
+.fade-in { animation: fadeIn 0.6s ease both; }
+@keyframes fadeIn { from { opacity:0; transform: translateY(8px); } to { opacity:1; transform:none; } }
+
+.scroll-x { overflow-x: auto; scrollbar-width: thin; }
+.scroll-x::-webkit-scrollbar { height: 6px; }
+.scroll-x::-webkit-scrollbar-thumb { background: var(--jlt-beige); border-radius: 3px; }
+
+.input-luxe {
+  width: 100%; padding: 0.85rem 1rem;
+  background: white; border: 1px solid rgba(14,12,10,0.18); border-radius: 4px;
+  font-size: 0.95rem; outline: none;
+  transition: border 0.25s ease;
+}
+.input-luxe:focus { border-color: var(--jlt-gold); }
+
+.gold-divider { background: linear-gradient(90deg, transparent, var(--jlt-gold), transparent); height: 1px; }
+
+.product-image-wrap { aspect-ratio: 4/5; display:flex; align-items:flex-end; justify-content:center; padding: 1.5rem; }
+
+a, button { transition: all 0.2s ease; }
