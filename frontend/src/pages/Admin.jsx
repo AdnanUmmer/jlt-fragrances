@@ -27,7 +27,7 @@ export const AdminLogin = () => {
         <input className="input-luxe" type="email" required value={form.email} onChange={(e)=>setForm({...form,email:e.target.value})} data-testid="admin-email"/>
         <input className="input-luxe" type="password" required placeholder="Password" value={form.password} onChange={(e)=>setForm({...form,password:e.target.value})} data-testid="admin-password"/>
         {err && <div className="text-sm text-red-600" data-testid="admin-error">{err}</div>}
-        <button className="btn-primary w-full justify-center" data-testid="admin-submit">Login</button>
+        <button type="submit" className="btn-primary w-full justify-center" data-testid="admin-submit">Login</button>
       </form>
     </div>
   );
