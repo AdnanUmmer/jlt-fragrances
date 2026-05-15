@@ -82,9 +82,10 @@ const Shop = () => {
                 {filters.brands.map((b) => <option key={b}>{b}</option>)}
               </select>
             </div>
-            <div className="py-4 flex gap-2">
+            <div className="py-4 flex gap-2 flex-wrap">
               <button onClick={() => setF("bestseller", "true")} className={`chip text-xs ${f.bestseller ? "chip-active" : ""}`} data-testid="filter-bestseller">Bestsellers</button>
               <button onClick={() => setF("new_arrival", "true")} className={`chip text-xs ${f.new_arrival ? "chip-active" : ""}`} data-testid="filter-new">New Arrivals</button>
+              <button onClick={() => setF("niche", "true")} className={`chip text-xs ${f.niche === "true" ? "chip-active" : ""}`} data-testid="filter-niche">Niche Brands</button>
             </div>
           </>}
         </aside>

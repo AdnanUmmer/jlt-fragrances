@@ -9,6 +9,7 @@ import ProductDetail from "./pages/ProductDetail";
 import Bestsellers from "./pages/Bestsellers";
 import DiscoverySets from "./pages/DiscoverySets";
 import FindYourScent from "./pages/FindYourScent";
+import Brands from "./pages/Brands";
 import { About, Contact, Shipping, Refund, Privacy, Terms, ComingSoon } from "./pages/StaticPages";
 import { Cart, Wishlist, Checkout } from "./pages/CartCheckout";
 import { AdminLogin, AdminDashboard } from "./pages/Admin";
@@ -27,6 +28,7 @@ function App() {
                 <Route path="/shop" element={<Shop />} />
                 <Route path="/product/:slug" element={<ProductDetail />} />
                 <Route path="/bestsellers" element={<Bestsellers />} />
+                <Route path="/brands" element={<Brands />} />
                 <Route path="/discovery-sets" element={<DiscoverySets />} />
                 <Route path="/find-your-scent" element={<FindYourScent />} />
                 <Route path="/about" element={<About />} />

@@ -1,6 +1,4 @@
-"""Auto-generate product attributes from brand+name using keyword matching.
-This gives every product a reasonable scent profile when the source PDF only has name+brand.
-"""
+"""Auto-generate product attributes from brand+name using keyword matching."""
 import re
 import hashlib
 from typing import Dict, List
@@ -9,7 +7,32 @@ SCENT_FAMILIES = ["Oud", "Floral", "Fresh", "Sweet", "Spicy", "Musky", "Clean", 
 MOODS = ["Fresh", "Sweet", "Oud", "Floral", "Clean", "Spicy", "Musky"]
 OCCASIONS = ["Office", "Date Night", "Wedding", "Daily Wear", "Gifting", "Festive Wear"]
 
-# Keyword -> attribute mappings
+# Niche brands (case-insensitive match against brand_inspiration)
+NICHE_BRANDS = {
+    "AMOUAGE", "AMOUROUD", "ATKINSONS", "BOADICEA", "BOADICEA THE VICTORIOUS", "BODICEA THE VICTORIOUS",
+    "BOND NO 9", "BOND NO. 9", "BYREDO", "CLIVE CHRISTIAN", "CLIVE CRISTIAN",
+    "COMME DES GARCONS", "COMMES DE GARCONS", "CREED", "DIPTYQUE", "EX NIHILO",
+    "FREDERIC MALLE", "GOLDFIELD & BANKS", "GOLDFIELD AND BANKS", "GOUTAL", "INITIO",
+    "JO MALONE", "KAYALI", "KILIAN", "LE LABO", "MAISON CRIVELLI",
+    "MAISON FRANCIS KURKDJIAN", "MAISON MARGIELA REPLICA", "MANCERA", "MATIERE PREMIERE",
+    "MEMO PARIS", "MONTALE", "NASOMATTO", "NISHANE", "ORMONDE JAYNE",
+    "PARFUMS DE MARLY", "PENHALIGON'S", "PENHALIGONS", "ROJA", "SORA DORA",
+    "SOSPIRO", "SPIRIT OF DUBAI", "STEPHANE HUMBERT LUCAS 777", "THOMAS KOSMALA", "THOMAS KHOSALA",
+    "TIZIANA TERENZI", "VILHELM PARFUMERIE", "XERJOFF", "ZOOLOGIST",
+}
+
+# Pricing: sizes 20ml / 50ml / 100ml
+SIZES_NICHE = [
+    {"size": "20ml", "price": 549},
+    {"size": "50ml", "price": 1199},
+    {"size": "100ml", "price": 1899},
+]
+SIZES_REGULAR = [
+    {"size": "20ml", "price": 449},
+    {"size": "50ml", "price": 1099},
+    {"size": "100ml", "price": 1699},
+]
+
 SCENT_KEYWORDS = {
     "Oud": ["oud", "oudh", "dehn", "agar", "agarwood", "mukhalat", "mukhallat", "ajbar", "arabian"],
     "Floral": ["rose", "jasmine", "iris", "violet", "lily", "gardenia", "orchid", "flower", "blossom", "tubero", "wardat", "candy", "delina"],
@@ -37,13 +60,6 @@ OCCASION_KEYWORDS = {
     "Gifting": ["bestseller", "premium", "luxury", "classic", "iconic"],
 }
 
-# Standard 30/50/100ml pricing per spec
-SIZES = [
-    {"size": "30ml", "price": 499},
-    {"size": "50ml", "price": 799},
-    {"size": "100ml", "price": 1299},
-]
-
 
 def slugify(text: str) -> str:
     text = text.lower()
@@ -53,9 +69,9 @@ def slugify(text: str) -> str:
     return text
 
 
-def _match_any(haystack: str, needles: List[str]) -> bool:
-    h = haystack.lower()
-    return any(n in h for n in needles)
+def is_niche_brand(brand: str) -> bool:
+    b = brand.upper().strip()
+    return b in NICHE_BRANDS or any(b.startswith(n) or n.startswith(b) for n in NICHE_BRANDS if len(n) >= 4)
 
 
 def detect_scent_family(brand: str, name: str) -> List[str]:
@@ -65,7 +81,6 @@ def detect_scent_family(brand: str, name: str) -> List[str]:
         if any(k in text for k in kws):
             families.append(fam)
     if not families:
-        # Hash-based deterministic fallback
         idx = int(hashlib.md5(text.encode()).hexdigest(), 16) % len(SCENT_FAMILIES)
         families = [SCENT_FAMILIES[idx]]
     return families[:3]
@@ -83,14 +98,10 @@ def detect_gender(brand: str, name: str) -> str:
 def detect_mood(families: List[str]) -> List[str]:
     moods = []
     for f in families:
-        if f in MOODS:
-            moods.append(f)
-        elif f == "Woody":
-            moods.append("Oud")
-        elif f == "Citrus":
-            moods.append("Fresh")
-        elif f == "Leather":
-            moods.append("Spicy")
+        if f in MOODS: moods.append(f)
+        elif f == "Woody": moods.append("Oud")
+        elif f == "Citrus": moods.append("Fresh")
+        elif f == "Leather": moods.append("Spicy")
     return list(dict.fromkeys(moods)) or ["Fresh"]
 
 
@@ -100,21 +111,16 @@ def detect_occasions(brand: str, name: str, families: List[str]) -> List[str]:
     for occ, kws in OCCASION_KEYWORDS.items():
         if any(k in text for k in kws):
             occs.append(occ)
-    if "Oud" in families:
-        occs.extend(["Wedding", "Festive Wear", "Date Night"])
-    if "Fresh" in families or "Citrus" in families:
-        occs.extend(["Office", "Daily Wear"])
-    if "Sweet" in families or "Floral" in families:
-        occs.append("Date Night")
-    if not occs:
-        occs = ["Daily Wear", "Gifting"]
-    # dedupe preserve order
+    if "Oud" in families: occs.extend(["Wedding", "Festive Wear", "Date Night"])
+    if "Fresh" in families or "Citrus" in families: occs.extend(["Office", "Daily Wear"])
+    if "Sweet" in families or "Floral" in families: occs.append("Date Night")
+    if not occs: occs = ["Daily Wear", "Gifting"]
     return list(dict.fromkeys(occs))[:4]
 
 
-def detect_longevity_projection(families: List[str], name: str) -> (str, str):
+def detect_longevity_projection(families: List[str], name: str):
     nm = name.lower()
-    if "Oud" in families or "Leather" in families or "intense" in nm or "elixir" in nm or "extreme" in nm or "parfum" in nm:
+    if "Oud" in families or "Leather" in families or any(x in nm for x in ["intense","elixir","extreme","parfum"]):
         return "Long Lasting (8-12 hrs)", "Strong"
     if "Fresh" in families or "Citrus" in families:
         return "Moderate (4-6 hrs)", "Soft"
@@ -122,15 +128,12 @@ def detect_longevity_projection(families: List[str], name: str) -> (str, str):
 
 
 def detect_season(families: List[str]) -> List[str]:
-    if "Oud" in families or "Spicy" in families or "Leather" in families:
-        return ["Winter", "Autumn"]
-    if "Fresh" in families or "Citrus" in families:
-        return ["Summer", "Spring"]
+    if any(f in families for f in ["Oud","Spicy","Leather"]): return ["Winter", "Autumn"]
+    if any(f in families for f in ["Fresh","Citrus"]): return ["Summer", "Spring"]
     return ["All Seasons"]
 
 
 def gen_notes(brand: str, name: str, families: List[str]) -> Dict[str, List[str]]:
-    """Generate plausible top/heart/base notes based on family."""
     note_db = {
         "Oud": {"top": ["Saffron", "Bergamot"], "heart": ["Rose", "Agarwood"], "base": ["Amber", "Musk", "Leather"]},
         "Floral": {"top": ["Pink Pepper", "Bergamot"], "heart": ["Rose", "Jasmine", "Iris"], "base": ["Musk", "Sandalwood"]},
@@ -144,8 +147,7 @@ def gen_notes(brand: str, name: str, families: List[str]) -> Dict[str, List[str]
         "Leather": {"top": ["Saffron"], "heart": ["Leather", "Tobacco"], "base": ["Amber", "Oud", "Suede"]},
     }
     primary = families[0] if families else "Fresh"
-    notes = note_db.get(primary, note_db["Fresh"])
-    return {"top": notes["top"], "heart": notes["heart"], "base": notes["base"]}
+    return note_db.get(primary, note_db["Fresh"])
 
 
 def gen_description(brand: str, name: str, families: List[str], occasions: List[str]) -> Dict[str, str]:
@@ -185,31 +187,28 @@ def build_product(idx: int, brand: str, name: str) -> dict:
     pretty_brand = brand.title().replace("'S", "'s")
     slug = slugify(f"{pretty_name}-inspired-by-{pretty_brand}-{idx}")
 
-    # Mark some products as bestsellers / new arrivals (deterministic)
+    niche = is_niche_brand(brand)
+    sizes = SIZES_NICHE if niche else SIZES_REGULAR
+    base_price = sizes[0]["price"]
+
     is_bestseller = idx % 11 == 0
     is_new = idx % 17 == 0
 
     return {
-        "slug": slug,
-        "name": pretty_name,
-        "brand_inspiration": pretty_brand,
-        "scent_family": families,
-        "moods": moods,
-        "gender": gender,
-        "occasions": occasions,
-        "seasons": seasons,
-        "longevity": longevity,
-        "projection": projection,
+        "slug": slug, "name": pretty_name, "brand_inspiration": pretty_brand,
+        "is_niche": niche,
+        "scent_family": families, "moods": moods, "gender": gender,
+        "occasions": occasions, "seasons": seasons,
+        "longevity": longevity, "projection": projection,
         "notes": notes,
-        "smells_like": desc["smells_like"],
-        "best_for": desc["best_for"],
-        "who_should_buy": desc["who_should_buy"],
-        "sizes": SIZES,
-        "base_price": 499,
-        "is_bestseller": is_bestseller,
-        "is_new_arrival": is_new,
-        "image_url": None,  # frontend will use placeholder
-        "in_stock": True,
+        "smells_like": desc["smells_like"], "best_for": desc["best_for"], "who_should_buy": desc["who_should_buy"],
+        "sizes": sizes, "base_price": base_price,
+        "is_bestseller": is_bestseller, "is_new_arrival": is_new,
+        "image_url": None, "in_stock": True,
         "rating": round(4.2 + (idx % 7) * 0.1, 1),
         "review_count": 5 + (idx * 7) % 80,
     }
+
+
+# Convenience export for server.py (defaults to regular sizes; admin-created products)
+SIZES = SIZES_REGULAR

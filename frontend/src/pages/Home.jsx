@@ -6,7 +6,7 @@ import { ProductGrid } from "../components/ProductCard";
 
 const trustItems = [
   ["750+ Inspired Scents", Sparkles],
-  ["Starting ₹499", CreditCard],
+  ["Starting ₹449", CreditCard],
   ["Premium Oils", Sparkles],
   ["Pan India Delivery", Truck],
   ["Secure Payments", ShieldCheck],
@@ -42,7 +42,7 @@ const Home = () => {
               Smell Premium.<br /><span className="shimmer-text">Spend Smart.</span>
             </h1>
             <p className="mt-6 text-base sm:text-lg text-jlt-black/75 max-w-xl">
-              Explore 750+ luxury-inspired fragrances crafted with premium oils, starting at ₹499.
+              Explore 750+ luxury-inspired fragrances crafted with premium oils, starting at ₹449.
             </p>
             <div className="mt-9 flex flex-wrap gap-3">
               <Link to="/bestsellers" className="btn-primary" data-testid="hero-shop-bestsellers">Shop Bestsellers <ArrowRight size={14} /></Link>
@@ -172,6 +172,21 @@ const Home = () => {
           <div className="text-[0.7rem] tracking-[0.3em] uppercase text-jlt-gold">@jltfragrances</div>
           <h2 className="font-display text-4xl mt-2">Follow our journey on Instagram</h2>
           <a href={INSTAGRAM_URL} target="_blank" rel="noreferrer" className="btn-outline mt-6 inline-flex" data-testid="instagram-cta">Visit Instagram <ArrowRight size={14} /></a>
+        </div>
+      </section>
+
+      {/* WHATSAPP HELP BANNER */}
+      <section className="bg-jlt-bone py-14 border-y border-jlt-black/10" data-testid="whatsapp-help-section">
+        <div className="max-w-5xl mx-auto px-6 grid md:grid-cols-[1fr_auto] items-center gap-6">
+          <div>
+            <div className="text-[0.7rem] tracking-[0.3em] uppercase text-jlt-gold">Personal Scent Consultation</div>
+            <h2 className="font-display text-3xl sm:text-4xl mt-2 leading-tight">Not sure what to buy? Chat with us on WhatsApp.</h2>
+            <p className="mt-3 text-sm text-jlt-black/70 max-w-xl">Most of our happy customers started with a quick WhatsApp chat. Tell us your style, budget, and occasion — we'll send you 3 perfect recommendations within minutes. No pressure, no spam.</p>
+          </div>
+          <a href={waLink("Hi JLT, I need help choosing the right fragrance.")} target="_blank" rel="noreferrer" className="btn-primary !bg-[#25D366] !border-[#25D366] hover:!bg-jlt-black hover:!border-jlt-black shrink-0" data-testid="wa-consult-cta">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="white"><path d="M.057 24l1.687-6.163c-1.041-1.804-1.588-3.849-1.587-5.946.003-6.556 5.338-11.891 11.893-11.891 3.181.001 6.167 1.24 8.413 3.488 2.245 2.248 3.481 5.236 3.48 8.414-.003 6.557-5.338 11.892-11.893 11.892-1.99-.001-3.951-.5-5.688-1.448l-6.305 1.654zm6.597-3.807c1.676.995 3.276 1.591 5.392 1.592 5.448 0 9.886-4.434 9.889-9.885.002-5.462-4.415-9.89-9.881-9.892-5.452 0-9.887 4.434-9.889 9.884-.001 2.225.651 3.891 1.746 5.634l-.999 3.648 3.742-.981z"/></svg>
+            Get a Free Consultation
+          </a>
         </div>
       </section>
 

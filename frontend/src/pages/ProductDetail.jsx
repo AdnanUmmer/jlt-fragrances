@@ -8,7 +8,7 @@ import { ProductGrid } from "../components/ProductCard";
 const ProductDetail = () => {
   const { slug } = useParams();
   const [data, setData] = useState(null);
-  const [size, setSize] = useState("50ml");
+  const [size, setSize] = useState("20ml");
   const [reviews, setReviews] = useState([]);
   const [reviewForm, setReviewForm] = useState({ name: "", rating: 5, title: "", comment: "" });
   const { addToCart } = useCart();
@@ -21,7 +21,7 @@ const ProductDetail = () => {
 
   if (!data) return <div className="max-w-7xl mx-auto px-6 py-20 text-center">Loading…</div>;
   const p = data.product;
-  const sz = p.sizes.find((s) => s.size === size) || p.sizes[1];
+  const sz = p.sizes.find((s) => s.size === size) || p.sizes[0];
 
   const submitReview = async (e) => {
     e.preventDefault();

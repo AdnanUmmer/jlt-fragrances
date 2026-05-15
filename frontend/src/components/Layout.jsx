@@ -9,6 +9,7 @@ const NavLinks = ({ onClick }) => (
     {[
       ["Shop All", "/shop"],
       ["Bestsellers", "/bestsellers"],
+      ["Brands", "/brands"],
       ["Discovery Sets", "/discovery-sets"],
       ["Find Your Scent", "/find-your-scent"],
       ["Just Love That", "/just-love-that"],
@@ -56,7 +57,7 @@ export const Navbar = () => {
               <span className="text-jlt-gold">•</span>
               <span>750+ Premium-Inspired Scents</span>
               <span className="text-jlt-gold">•</span>
-              <span>Starting ₹499</span>
+              <span>Starting ₹449</span>
               <span className="text-jlt-gold">•</span>
               <span>Pan India Delivery</span>
               <span className="text-jlt-gold">•</span>
@@ -69,8 +70,8 @@ export const Navbar = () => {
         <button className="md:hidden" onClick={() => setOpen(!open)} data-testid="mobile-menu-toggle">
           {open ? <X size={22} /> : <Menu size={22} />}
         </button>
-        <Link to="/" className="flex items-center" data-testid="logo-link">
-          <img src="/logo.jpg" alt="JLT Fragrances" className="h-12 sm:h-14 w-auto object-contain" />
+        <Link to="/" className="flex items-center shrink-0" data-testid="logo-link">
+          <img src="/logo.jpg" alt="JLT Fragrances" className="h-16 sm:h-20 w-auto object-contain" />
         </Link>
         <nav className="hidden md:flex items-center gap-7">
           <NavLinks />
@@ -117,7 +118,7 @@ export const Footer = () => (
   <footer className="bg-jlt-black text-jlt-ivory mt-20" data-testid="footer">
     <div className="max-w-7xl mx-auto px-6 py-16 grid grid-cols-2 md:grid-cols-5 gap-10">
       <div className="col-span-2">
-        <img src="/logo.jpg" alt="JLT Fragrances" className="h-16 w-auto object-contain bg-jlt-ivory p-1 inline-block" />
+        <img src="/logo.jpg" alt="JLT Fragrances" className="h-24 w-auto object-contain bg-jlt-ivory p-2 inline-block" />
         <div className="text-jlt-gold text-[0.7rem] tracking-[0.32em] uppercase mt-3">Smell Premium. Spend Smart.</div>
         <p className="mt-5 text-sm text-jlt-ivory/70 max-w-sm">Luxury-inspired fragrances crafted for everyday confidence. Premium oils, Pan India delivery, starting ₹499.</p>
         <div className="flex gap-4 mt-6">
@@ -128,7 +129,7 @@ export const Footer = () => (
       </div>
       <div>
         <div className="text-[0.7rem] tracking-[0.3em] uppercase text-jlt-gold mb-4">Shop</div>
-        {[["Shop All", "/shop"], ["Bestsellers", "/bestsellers"], ["Discovery Sets", "/discovery-sets"], ["Find Your Scent", "/find-your-scent"], ["Just Love That", "/just-love-that"]].map(([l, t]) => (
+        {[["Shop All", "/shop"], ["Bestsellers", "/bestsellers"], ["Brands", "/brands"], ["Discovery Sets", "/discovery-sets"], ["Find Your Scent", "/find-your-scent"], ["Just Love That", "/just-love-that"]].map(([l, t]) => (
           <Link key={t} to={t} className="block text-sm py-1 text-jlt-ivory/80 hover:text-jlt-gold">{l}</Link>
         ))}
       </div>

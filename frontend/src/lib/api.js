@@ -2,7 +2,7 @@ import axios from "axios";
 
 export const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 export const API = `${BACKEND_URL}/api`;
-export const WHATSAPP_NUMBER = "+910000000000"; // placeholder – share your real WhatsApp business number to wire in
+export const WHATSAPP_NUMBER = "+918089083404";
 export const WHATSAPP_DISPLAY = "WhatsApp Support";
 export const INSTAGRAM_URL = "https://www.instagram.com/jltfragrances?igsh=MWJxamRpdHN5ZmFj";
 export const SUPPORT_EMAIL = "justlikethatfragrances@gmail.com";

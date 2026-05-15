@@ -141,6 +141,7 @@ async def list_products(
     size: Optional[str] = None,
     longevity: Optional[str] = None,
     projection: Optional[str] = None,
+    niche: Optional[bool] = None,
     sort: Optional[str] = "popular",
     page: int = Query(1, ge=1),
     limit: int = Query(24, ge=1, le=120),
@@ -177,6 +178,8 @@ async def list_products(
         query["projection"] = projection
     if size:
         query["sizes.size"] = size
+    if niche is not None:
+        query["is_niche"] = niche
 
     sort_spec = [("is_bestseller", -1), ("rating", -1)]
     if sort == "price_asc":
@@ -198,15 +201,54 @@ async def list_products(
 @api.get("/products/filters")
 async def get_filters():
     brands = await db.products.distinct("brand_inspiration")
+    niche_brands = await db.products.distinct("brand_inspiration", {"is_niche": True})
     return {
         "brands": sorted(brands),
+        "niche_brands": sorted(niche_brands),
         "scent_families": ["Oud", "Floral", "Fresh", "Sweet", "Spicy", "Musky", "Clean", "Woody", "Citrus", "Leather"],
         "moods": ["Fresh", "Sweet", "Oud", "Floral", "Clean", "Spicy", "Musky"],
         "occasions": ["Office", "Date Night", "Wedding", "Daily Wear", "Gifting", "Festive Wear"],
         "genders": ["Men", "Women", "Unisex"],
-        "sizes": ["30ml", "50ml", "100ml"],
+        "sizes": ["20ml", "50ml", "100ml"],
         "longevity": ["Moderate (4-6 hrs)", "Long Lasting (6-8 hrs)", "Long Lasting (8-12 hrs)"],
         "projection": ["Soft", "Moderate", "Strong"],
+    }
+
+
+@api.get("/brands")
+async def list_brands():
+    """Alphabetical brand directory with product counts."""
+    pipeline = [
+        {"$group": {
+            "_id": "$brand_inspiration",
+            "count": {"$sum": 1},
+            "is_niche": {"$first": "$is_niche"},
+        }},
+        {"$sort": {"_id": 1}},
+    ]
+    cursor = db.products.aggregate(pipeline)
+    items = [{"brand": d["_id"], "count": d["count"], "is_niche": bool(d.get("is_niche"))} async for d in cursor]
+    grouped: dict = {}
+    for it in items:
+        letter = (it["brand"][:1] or "#").upper()
+        grouped.setdefault(letter, []).append(it)
+    return {"groups": [{"letter": k, "brands": v} for k, v in sorted(grouped.items())], "total": len(items)}
+
+
+@api.get("/combos")
+async def list_combos():
+    return {
+        "tester_combos": [
+            {"slug": "tester-3-8ml", "title": "Tester Combo – 3 Fragrances", "subtitle": "3 × 8ml", "price": 549, "description": "Pick any 3 fragrances at 8ml each. Perfect first-time sampler.", "items": 3, "size": "8ml"},
+            {"slug": "tester-5-8ml", "title": "Tester Combo – 5 Fragrances", "subtitle": "5 × 8ml", "price": 899, "description": "Pick any 5 fragrances at 8ml. Our most popular sampler.", "items": 5, "size": "8ml", "tag": "Most Popular"},
+            {"slug": "tester-10-8ml", "title": "Tester Combo – 10 Fragrances", "subtitle": "10 × 8ml", "price": 1699, "description": "Pick any 10 fragrances at 8ml. The ultimate explorer set.", "items": 10, "size": "8ml", "tag": "Best Value"},
+        ],
+        "special_offers": [
+            {"slug": "special-5-20ml", "title": "5 × 20ml Bundle", "subtitle": "Pick 5 at 20ml each", "price": 1999, "description": "Pick any 5 full 20ml bottles at a special bundle price.", "items": 5, "size": "20ml"},
+            {"slug": "special-4-30ml", "title": "4 × 30ml Bundle", "subtitle": "Pick 4 at 30ml each", "price": 2499, "description": "Pick any 4 fragrances at 30ml. Great gifting bundle.", "items": 4, "size": "30ml"},
+            {"slug": "special-3-50ml", "title": "3 × 50ml Bundle", "subtitle": "Pick 3 at 50ml each", "price": 2999, "description": "Pick any 3 fragrances at 50ml. Premium signature bundle.", "items": 3, "size": "50ml", "tag": "Bestseller"},
+            {"slug": "special-2-100ml", "title": "2 × 100ml Bundle", "subtitle": "Pick 2 at 100ml each", "price": 2999, "description": "Pick any 2 fragrances at 100ml. Maximum value, full-size bottles.", "items": 2, "size": "100ml", "tag": "Top Value"},
+        ],
     }
 
 
