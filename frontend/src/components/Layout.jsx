@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { Link, NavLink, useNavigate } from "react-router-dom";
 import { Search, Heart, ShoppingBag, Menu, X, Instagram } from "lucide-react";
 import { useCart, useWish } from "../lib/store";
-import { waLink, INSTAGRAM_URL } from "../lib/api";
+import { waLink, INSTAGRAM_URL, SUPPORT_EMAIL } from "../lib/api";
 
 const NavLinks = ({ onClick }) => (
   <>
@@ -69,9 +69,8 @@ export const Navbar = () => {
         <button className="md:hidden" onClick={() => setOpen(!open)} data-testid="mobile-menu-toggle">
           {open ? <X size={22} /> : <Menu size={22} />}
         </button>
-        <Link to="/" className="flex flex-col items-center md:items-start" data-testid="logo-link">
-          <span className="font-display text-2xl sm:text-3xl tracking-wide leading-none">JLT</span>
-          <span className="text-[0.6rem] tracking-[0.32em] uppercase text-jlt-gold mt-0.5">Fragrances</span>
+        <Link to="/" className="flex items-center" data-testid="logo-link">
+          <img src="/logo.jpg" alt="JLT Fragrances" className="h-12 sm:h-14 w-auto object-contain" />
         </Link>
         <nav className="hidden md:flex items-center gap-7">
           <NavLinks />
@@ -118,13 +117,13 @@ export const Footer = () => (
   <footer className="bg-jlt-black text-jlt-ivory mt-20" data-testid="footer">
     <div className="max-w-7xl mx-auto px-6 py-16 grid grid-cols-2 md:grid-cols-5 gap-10">
       <div className="col-span-2">
-        <div className="font-display text-3xl">JLT Fragrances</div>
-        <div className="text-jlt-gold text-[0.7rem] tracking-[0.32em] uppercase mt-1">Smell Premium. Spend Smart.</div>
+        <img src="/logo.jpg" alt="JLT Fragrances" className="h-16 w-auto object-contain bg-jlt-ivory p-1 inline-block" />
+        <div className="text-jlt-gold text-[0.7rem] tracking-[0.32em] uppercase mt-3">Smell Premium. Spend Smart.</div>
         <p className="mt-5 text-sm text-jlt-ivory/70 max-w-sm">Luxury-inspired fragrances crafted for everyday confidence. Premium oils, Pan India delivery, starting ₹499.</p>
         <div className="flex gap-4 mt-6">
           <a href={INSTAGRAM_URL} target="_blank" rel="noreferrer" className="line-hover" data-testid="footer-instagram">Instagram</a>
           <a href={waLink()} target="_blank" rel="noreferrer" className="line-hover" data-testid="footer-whatsapp">WhatsApp</a>
-          <a href="mailto:support@jltfragrances.com" className="line-hover" data-testid="footer-email">Email</a>
+          <a href={`mailto:${SUPPORT_EMAIL}`} className="line-hover" data-testid="footer-email">Email</a>
         </div>
       </div>
       <div>

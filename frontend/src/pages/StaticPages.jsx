@@ -1,5 +1,6 @@
 import React from "react";
 import { Link } from "react-router-dom";
+import { waLink, INSTAGRAM_URL, SUPPORT_EMAIL } from "../lib/api";
 
 export const About = () => (
   <div className="max-w-4xl mx-auto px-6 py-16" data-testid="about-page">
@@ -37,11 +38,11 @@ export const Contact = () => {
       </div>
       <div className="grid md:grid-cols-2 gap-8">
         <div className="space-y-5 text-sm">
-          <div><div className="text-[0.7rem] tracking-[0.25em] uppercase text-jlt-black/60">Email</div><a href="mailto:support@jltfragrances.com" className="text-base hover:text-jlt-gold">support@jltfragrances.com</a></div>
-          <div><div className="text-[0.7rem] tracking-[0.25em] uppercase text-jlt-black/60">WhatsApp</div><a href={"https://wa.me/910000000000"} target="_blank" rel="noreferrer" className="text-base text-[#25D366]">Chat on WhatsApp</a></div>
+          <div><div className="text-[0.7rem] tracking-[0.25em] uppercase text-jlt-black/60">Email</div><a href={`mailto:${SUPPORT_EMAIL}`} className="text-base hover:text-jlt-gold">{SUPPORT_EMAIL}</a></div>
+          <div><div className="text-[0.7rem] tracking-[0.25em] uppercase text-jlt-black/60">WhatsApp</div><a href={waLink()} target="_blank" rel="noreferrer" className="text-base text-[#25D366]">Chat on WhatsApp</a></div>
           <div><div className="text-[0.7rem] tracking-[0.25em] uppercase text-jlt-black/60">Business Hours</div><div>Monday to Saturday, 10 AM to 7 PM</div></div>
           <div><div className="text-[0.7rem] tracking-[0.25em] uppercase text-jlt-black/60">Order Support</div><div>For order support, please message us with your order number.</div></div>
-          <div><div className="text-[0.7rem] tracking-[0.25em] uppercase text-jlt-black/60">Instagram</div><a href="https://www.instagram.com/jltfragrances/" target="_blank" rel="noreferrer" className="text-base hover:text-jlt-gold">@jltfragrances</a></div>
+          <div><div className="text-[0.7rem] tracking-[0.25em] uppercase text-jlt-black/60">Instagram</div><a href={INSTAGRAM_URL} target="_blank" rel="noreferrer" className="text-base hover:text-jlt-gold">@jltfragrances</a></div>
         </div>
         <form onSubmit={submit} className="bg-white border border-jlt-black/10 p-6 space-y-3" data-testid="contact-form">
           <input className="input-luxe" placeholder="Name" required value={form.name} onChange={(e)=>setForm({...form, name:e.target.value})} data-testid="contact-name"/>
@@ -101,7 +102,7 @@ export const Privacy = () => (
       ["What we collect", "Name, email, phone, shipping address, and order history — only what's required to fulfill your orders and provide support."],
       ["How we use it", "To process your orders, communicate updates, and improve your shopping experience."],
       ["Third Parties", "We share data only with payment processors and shipping partners to fulfill your orders. We never sell your data."],
-      ["Contact", "For any data concerns, write to support@jltfragrances.com."],
+      ["Contact", "For any data concerns, write to justlikethatfragrances@gmail.com."],
     ]}/>
 );
 export const Terms = () => (

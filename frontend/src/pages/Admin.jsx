@@ -3,7 +3,7 @@ import { Navigate, useNavigate } from "react-router-dom";
 import http from "../lib/api";
 
 export const AdminLogin = () => {
-  const [form, setForm] = useState({ email: "admin@jltfragrances.com", password: "" });
+  const [form, setForm] = useState({ email: "justlikethatfragrances@gmail.com", password: "" });
   const [err, setErr] = useState("");
   const nav = useNavigate();
   const submit = async (e) => {
