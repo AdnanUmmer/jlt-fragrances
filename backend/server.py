@@ -10,11 +10,14 @@ import csv
 import json
 import uuid
 import logging
+import hmac
+import hashlib
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
 import bcrypt
 import jwt
+import razorpay
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, UploadFile, File, Query
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -25,6 +28,11 @@ from seed_helpers import build_product, slugify, SIZES
 mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ["DB_NAME"]]
+
+# Initialize Razorpay client
+razorpay_client = razorpay.Client(
+    auth=(os.environ.get("RAZORPAY_KEY_ID", ""), os.environ.get("RAZORPAY_KEY_SECRET", ""))
+)
 
 app = FastAPI(title="JLT Fragrances API")
 api = APIRouter(prefix="/api")
@@ -119,6 +127,99 @@ class ProductUpsert(BaseModel):
     is_bestseller: bool = False
     is_new_arrival: bool = False
     in_stock: bool = True
+
+
+class OrderItem(BaseModel):
+    slug: str
+    name: str
+    brand: str
+    size: str
+    price: int
+    qty: int
+
+
+class CreateOrderRequest(BaseModel):
+    customer_name: str
+    customer_email: EmailStr
+    customer_phone: str
+    shipping_address: str
+    shipping_city: str
+    shipping_state: str
+    shipping_pin: str
+    items: List[OrderItem]
+    total_amount: int  # in paise (₹1 = 100 paise)
+
+
+class PaymentVerifyRequest(BaseModel):
+    razorpay_order_id: str
+    razorpay_payment_id: str
+    razorpay_signature: str
+
+
+# Razorpay helper functions
+def verify_razorpay_signature(order_id: str, payment_id: str, signature: str) -> bool:
+    """Verify Razorpay payment signature."""
+    try:
+        message = f"{order_id}|{payment_id}"
+        secret = os.environ.get("RAZORPAY_KEY_SECRET", "").encode()
+        computed_sig = hmac.new(secret, message.encode(), hashlib.sha256).hexdigest()
+        return computed_sig == signature
+    except Exception as e:
+        log.error(f"Signature verification error: {e}")
+        return False
+
+
+async def send_telegram_notification(order_data: dict) -> bool:
+    """Send Telegram notification. Return True if successful, False otherwise."""
+    try:
+        token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+        
+        if not token or not chat_id:
+            log.warning("Telegram credentials not configured, skipping notification")
+            return False
+        
+        import aiohttp
+        
+        # Format message
+        msg = f"""
+✅ New Order Confirmed!
+
+📋 Order ID: {order_data.get('order_id')}
+💳 Razorpay Payment ID: {order_data.get('razorpay_payment_id')}
+
+👤 Customer: {order_data.get('customer_name')}
+📧 Email: {order_data.get('customer_email')}
+📞 Phone: {order_data.get('customer_phone')}
+
+📦 Shipping:
+{order_data.get('shipping_address')}
+{order_data.get('shipping_city')}, {order_data.get('shipping_state')} {order_data.get('shipping_pin')}
+
+🛍️ Items:
+"""
+        for item in order_data.get('items', []):
+            msg += f"\n  • {item['name']} ({item['brand']}) {item['size']} x{item['qty']} = ₹{item['price'] * item['qty']}"
+        
+        msg += f"\n\n💰 Total: ₹{order_data.get('total_amount') / 100:.2f}"
+        msg += f"\n✔️ Payment Status: PAID"
+        msg += f"\n⏰ Timestamp: {order_data.get('created_at')}"
+        
+        # Send via Telegram
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload = {"chat_id": chat_id, "text": msg}
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                if resp.status == 200:
+                    log.info(f"Telegram notification sent for order {order_data.get('order_id')}")
+                    return True
+                else:
+                    log.error(f"Telegram API error: {resp.status}")
+                    return False
+    except Exception as e:
+        log.error(f"Telegram notification error (non-blocking): {e}")
+        return False  # Don't break checkout if Telegram fails
 
 
 @api.get("/")
@@ -396,6 +497,149 @@ async def list_contacts(admin: dict = Depends(get_current_admin)):
     return {"items": items}
 
 
+# ============ RAZORPAY & ORDER ENDPOINTS ============
+
+@api.post("/orders")
+async def create_order(body: CreateOrderRequest):
+    """Create order and Razorpay payment."""
+    try:
+        # Validate items exist
+        for item in body.items:
+            product = await db.products.find_one({"slug": item.slug})
+            if not product:
+                raise HTTPException(status_code=400, detail=f"Product {item.slug} not found")
+        
+        # Create order ID
+        order_id = f"ORD-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{str(uuid.uuid4())[:8].upper()}"
+        
+        # Create Razorpay order (amount in paise)
+        razorpay_order = razorpay_client.order.create(
+            data={"amount": body.total_amount, "currency": "INR", "receipt": order_id}
+        )
+        
+        # Store order in MongoDB (status: pending until payment verified)
+        order_doc = {
+            "order_id": order_id,
+            "razorpay_order_id": razorpay_order["id"],
+            "customer_name": body.customer_name,
+            "customer_email": body.customer_email,
+            "customer_phone": body.customer_phone,
+            "shipping_address": body.shipping_address,
+            "shipping_city": body.shipping_city,
+            "shipping_state": body.shipping_state,
+            "shipping_pin": body.shipping_pin,
+            "items": [item.model_dump() for item in body.items],
+            "total_amount": body.total_amount,  # in paise
+            "payment_status": "pending",
+            "razorpay_payment_id": None,
+            "razorpay_signature": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await db.orders.insert_one(order_doc)
+        
+        return {
+            "ok": True,
+            "order_id": order_id,
+            "razorpay_order_id": razorpay_order["id"],
+            "razorpay_key_id": os.environ.get("RAZORPAY_KEY_ID", ""),
+            "customer_name": body.customer_name,
+            "customer_email": body.customer_email,
+            "total_amount": body.total_amount,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Order creation error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create order")
+
+
+@api.post("/orders/verify-payment")
+async def verify_payment(body: PaymentVerifyRequest):
+    """Verify Razorpay payment and mark order as paid."""
+    try:
+        # Verify signature
+        if not verify_razorpay_signature(body.razorpay_order_id, body.razorpay_payment_id, body.razorpay_signature):
+            log.warning(f"Invalid signature for order {body.razorpay_order_id}")
+            raise HTTPException(status_code=400, detail="Invalid payment signature")
+        
+        # Find order by razorpay_order_id
+        order = await db.orders.find_one({"razorpay_order_id": body.razorpay_order_id})
+        if not order:
+            log.warning(f"Order not found: {body.razorpay_order_id}")
+            raise HTTPException(status_code=404, detail="Order not found")
+        
+        # Verify payment with Razorpay API
+        try:
+            payment = razorpay_client.payment.fetch(body.razorpay_payment_id)
+            if payment.get("status") != "captured":
+                log.warning(f"Payment not captured: {body.razorpay_payment_id}")
+                raise HTTPException(status_code=400, detail="Payment not captured")
+        except Exception as e:
+            log.error(f"Razorpay verification error: {e}")
+            raise HTTPException(status_code=500, detail="Payment verification failed")
+        
+        # Update order: mark as paid
+        await db.orders.update_one(
+            {"razorpay_order_id": body.razorpay_order_id},
+            {
+                "$set": {
+                    "payment_status": "paid",
+                    "razorpay_payment_id": body.razorpay_payment_id,
+                    "razorpay_signature": body.razorpay_signature,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            }
+        )
+        
+        # Send Telegram notification (non-blocking)
+        order_data = {
+            "order_id": order.get("order_id"),
+            "razorpay_payment_id": body.razorpay_payment_id,
+            "customer_name": order.get("customer_name"),
+            "customer_email": order.get("customer_email"),
+            "customer_phone": order.get("customer_phone"),
+            "shipping_address": order.get("shipping_address"),
+            "shipping_city": order.get("shipping_city"),
+            "shipping_state": order.get("shipping_state"),
+            "shipping_pin": order.get("shipping_pin"),
+            "items": order.get("items", []),
+            "total_amount": order.get("total_amount"),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        
+        # Fire and forget - don't wait for Telegram
+        import asyncio
+        asyncio.create_task(send_telegram_notification(order_data))
+        
+        return {
+            "ok": True,
+            "order_id": order.get("order_id"),
+            "message": "Payment verified and order confirmed",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Payment verification error: {e}")
+        raise HTTPException(status_code=500, detail="Payment verification failed")
+
+
+@api.get("/admin/orders")
+async def list_orders(admin: dict = Depends(get_current_admin)):
+    """Admin: List all orders."""
+    items = await db.orders.find({}, {"_id": 0}).sort([("created_at", -1)]).limit(500).to_list(500)
+    return {"items": items}
+
+
+@api.get("/admin/orders/{order_id}")
+async def get_order_detail(order_id: str, admin: dict = Depends(get_current_admin)):
+    """Admin: Get order details."""
+    order = await db.orders.find_one({"order_id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return order
+
+
 app.include_router(api)
 
 app.add_middleware(
@@ -417,6 +661,11 @@ async def startup():
     await db.products.create_index("scent_family")
     await db.products.create_index("moods")
     await db.users.create_index("email", unique=True)
+    await db.orders.create_index("order_id", unique=True)
+    await db.orders.create_index("razorpay_order_id", unique=True)
+    await db.orders.create_index("customer_email")
+    await db.orders.create_index("payment_status")
+    await db.orders.create_index("created_at", expireAfterSeconds=2592000)  # TTL: 30 days
 
     admin_email = os.environ["ADMIN_EMAIL"].lower()
     admin_password = os.environ["ADMIN_PASSWORD"]
