@@ -12,6 +12,8 @@ import uuid
 import logging
 import hmac
 import hashlib
+import smtplib
+from email.message import EmailMessage
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
@@ -220,6 +222,91 @@ async def send_telegram_notification(order_data: dict) -> bool:
     except Exception as e:
         log.error(f"Telegram notification error (non-blocking): {e}")
         return False  # Don't break checkout if Telegram fails
+
+
+def format_inr(amount_paise: int) -> str:
+    return f"₹{amount_paise / 100:,.2f}"
+
+
+def send_admin_order_email(order_data: dict) -> bool:
+    """Send admin order notification email for confirmed orders."""
+    smtp_host = os.environ.get("SMTP_HOST", "").strip()
+    smtp_port = os.environ.get("SMTP_PORT", "").strip()
+    smtp_user = os.environ.get("SMTP_USER", "").strip()
+    smtp_password = os.environ.get("SMTP_PASSWORD", "").strip()
+    email_from = os.environ.get("EMAIL_FROM", "").strip()
+    email_to = os.environ.get("EMAIL_TO", "").strip()
+
+    if not (smtp_host and smtp_port and smtp_user and smtp_password and email_from and email_to):
+        log.error("SMTP configuration is incomplete, admin order email skipped")
+        return False
+
+    try:
+        port = int(smtp_port)
+    except ValueError:
+        log.error("SMTP_PORT must be an integer, admin order email skipped")
+        return False
+
+    subject = f"New Order Received - {order_data.get('order_id')}"
+    body_lines = [
+        f"Order ID: {order_data.get('order_id')}",
+        f"Date & Time: {order_data.get('created_at')}",
+        f"Customer Name: {order_data.get('customer_name')}",
+        f"Customer Email: {order_data.get('customer_email')}",
+        f"Customer Phone: {order_data.get('customer_phone')}",
+        "",
+        "Shipping Address:",
+        f"{order_data.get('shipping_address')}",
+        f"{order_data.get('shipping_city')}, {order_data.get('shipping_state')} {order_data.get('shipping_pin')}",
+        "",
+        f"Payment Method: {order_data.get('payment_method', 'Razorpay')}",
+        f"Payment Status: {order_data.get('payment_status', 'paid').upper()}",
+        f"Razorpay Payment ID: {order_data.get('razorpay_payment_id') or 'N/A'}",
+        f"Razorpay Order ID: {order_data.get('razorpay_order_id') or 'N/A'}",
+        "",
+        "Items:",
+    ]
+
+    for item in order_data.get("items", []):
+        unit_price = item.get("price", 0)
+        qty = item.get("qty", 0)
+        line_total = unit_price * qty
+        body_lines.append(
+            f"- {item.get('name')} | Brand: {item.get('brand')} | Size: {item.get('size')} | Quantity: {qty} | Unit Price: {format_inr(unit_price)} | Line Total: {format_inr(line_total)}"
+        )
+
+    body_lines.extend([
+        "",
+        f"Grand Total: {format_inr(order_data.get('total_amount', 0))}",
+    ])
+
+    message = EmailMessage()
+    message["From"] = email_from
+    message["To"] = email_to
+    message["Subject"] = subject
+    message.set_content("\n".join(body_lines))
+
+    try:
+        if port == 465:
+            server = smtplib.SMTP_SSL(smtp_host, port, timeout=10)
+        else:
+            server = smtplib.SMTP(smtp_host, port, timeout=10)
+            server.starttls()
+
+        with server:
+            server.login(smtp_user, smtp_password)
+            server.send_message(message)
+
+        log.info("Admin order email sent for order %s", order_data.get("order_id"))
+        return True
+    except Exception as e:
+        log.error("Admin order email failed for order %s: %s", order_data.get("order_id"), e)
+        return False
+
+
+async def send_admin_order_email_async(order_data: dict) -> bool:
+    import asyncio
+    return await asyncio.to_thread(send_admin_order_email, order_data)
 
 
 @api.get("/")
@@ -595,7 +682,10 @@ async def verify_payment(body: PaymentVerifyRequest):
         # Send Telegram notification (non-blocking)
         order_data = {
             "order_id": order.get("order_id"),
+            "razorpay_order_id": order.get("razorpay_order_id"),
             "razorpay_payment_id": body.razorpay_payment_id,
+            "payment_method": "Razorpay",
+            "payment_status": "paid",
             "customer_name": order.get("customer_name"),
             "customer_email": order.get("customer_email"),
             "customer_phone": order.get("customer_phone"),
@@ -608,9 +698,10 @@ async def verify_payment(body: PaymentVerifyRequest):
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         
-        # Fire and forget - don't wait for Telegram
+        # Fire and forget - don't wait for notifications
         import asyncio
         asyncio.create_task(send_telegram_notification(order_data))
+        asyncio.create_task(send_admin_order_email_async(order_data))
         
         return {
             "ok": True,
