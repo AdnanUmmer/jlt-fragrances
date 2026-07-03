@@ -102,7 +102,7 @@ export const Checkout = () => {
   const [placed, setPlaced] = React.useState(false);
   const [orderData, setOrderData] = React.useState(null);
   const [paymentId, setPaymentId] = React.useState("");
-  const [paidTotal, setPaidTotal] = React.useState<number | null>(null);
+  const [paidTotal, setPaidTotal] = React.useState(null);
 
   // Load Razorpay script
   React.useEffect(() => {
