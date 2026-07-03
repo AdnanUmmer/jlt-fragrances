@@ -102,6 +102,7 @@ export const Checkout = () => {
   const [placed, setPlaced] = React.useState(false);
   const [orderData, setOrderData] = React.useState(null);
   const [paymentId, setPaymentId] = React.useState("");
+  const [paidTotal, setPaidTotal] = React.useState<number | null>(null);
 
   // Load Razorpay script
   React.useEffect(() => {
@@ -147,6 +148,7 @@ export const Checkout = () => {
 
       const orderData = createOrderRes.data;
       setOrderData(orderData);
+      setPaidTotal(total);
 
       // Step 2: Open Razorpay checkout
       const options = {
@@ -206,17 +208,17 @@ export const Checkout = () => {
   };
 
   if (placed && orderData) {
+    const displayTotal = paidTotal ?? (orderData.total_amount ? orderData.total_amount / 100 : (cartTotal >= 999 ? cartTotal : cartTotal + 49));
     return (
       <div className="max-w-2xl mx-auto px-6 py-20 text-center" data-testid="order-placed">
         <h1 className="font-display text-4xl">✓ Order Confirmed!</h1>
         <div className="divider-gold" />
         <p className="mt-4 text-jlt-black/70">
-          Thank you, <strong>{form.name}</strong>! Your payment of <strong>₹{(cartTotal >= 999 ? cartTotal : cartTotal + 49)}</strong> has been received.
+          Thank you, <strong>{form.name}</strong>! Your payment of <strong>₹{displayTotal}</strong> has been received.
         </p>
         <div className="bg-jlt-gold/5 border border-jlt-gold/20 p-4 rounded mt-6 text-left text-sm">
           <div className="mb-2"><strong>Order ID:</strong> {orderData.order_id}</div>
           <div className="mb-2"><strong>Payment ID:</strong> {paymentId || "Processing..."}</div>
-          <div><strong>Email:</strong> Confirmation sent to {form.email}</div>
         </div>
         <p className="mt-4 text-jlt-black/60 text-sm">Our team will process your order shortly.</p>
         <Link to="/shop" className="btn-primary mt-8 inline-flex">Continue Shopping</Link>
