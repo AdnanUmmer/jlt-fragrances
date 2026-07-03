@@ -297,10 +297,22 @@ def send_admin_order_email(order_data: dict) -> bool:
             server.login(smtp_user, smtp_password)
             server.send_message(message)
 
-        log.info("Admin order email sent for order %s", order_data.get("order_id"))
+        log.info(
+            "Admin order email sent",
+            extra={
+                "order_id": order_data.get("order_id"),
+                "recipient": email_to,
+            },
+        )
         return True
     except Exception as e:
-        log.error("Admin order email failed for order %s: %s", order_data.get("order_id"), e)
+        log.error(
+            "Admin order email failed",
+            extra={
+                "order_id": order_data.get("order_id"),
+                "error": str(e),
+            },
+        )
         return False
 
 
@@ -624,6 +636,15 @@ async def create_order(body: CreateOrderRequest):
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         await db.orders.insert_one(order_doc)
+        log.info(
+            "Order created",
+            extra={
+                "order_id": order_id,
+                "razorpay_order_id": razorpay_order["id"],
+                "customer_email": body.customer_email,
+                "total_amount": body.total_amount,
+            },
+        )
         
         return {
             "ok": True,
@@ -645,9 +666,14 @@ async def create_order(body: CreateOrderRequest):
 async def verify_payment(body: PaymentVerifyRequest):
     """Verify Razorpay payment and mark order as paid."""
     try:
+        log.info("Payment verification request received", extra={
+            "razorpay_order_id": body.razorpay_order_id,
+            "razorpay_payment_id": body.razorpay_payment_id,
+        })
+
         # Verify signature
         if not verify_razorpay_signature(body.razorpay_order_id, body.razorpay_payment_id, body.razorpay_signature):
-            log.warning(f"Invalid signature for order {body.razorpay_order_id}")
+            log.warning("Invalid payment signature for razorpay_order_id=%s", body.razorpay_order_id)
             raise HTTPException(status_code=400, detail="Invalid payment signature")
         
         # Find order by razorpay_order_id
@@ -659,11 +685,18 @@ async def verify_payment(body: PaymentVerifyRequest):
         # Verify payment with Razorpay API
         try:
             payment = razorpay_client.payment.fetch(body.razorpay_payment_id)
+            log.info("Razorpay payment fetched", extra={
+                "razorpay_payment_id": body.razorpay_payment_id,
+                "amount": payment.get("amount"),
+                "status": payment.get("status"),
+            })
             if payment.get("status") != "captured":
-                log.warning(f"Payment not captured: {body.razorpay_payment_id}")
+                log.warning("Payment not captured for razorpay_payment_id=%s", body.razorpay_payment_id)
                 raise HTTPException(status_code=400, detail="Payment not captured")
+        except HTTPException:
+            raise
         except Exception as e:
-            log.error(f"Razorpay verification error: {e}")
+            log.error("Razorpay verification error for payment %s: %s", body.razorpay_payment_id, e)
             raise HTTPException(status_code=500, detail="Payment verification failed")
         
         # Update order: mark as paid
@@ -695,13 +728,19 @@ async def verify_payment(body: PaymentVerifyRequest):
             "shipping_pin": order.get("shipping_pin"),
             "items": order.get("items", []),
             "total_amount": order.get("total_amount"),
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": order.get("created_at"),
         }
         
         # Fire and forget - don't wait for notifications
         import asyncio
         asyncio.create_task(send_telegram_notification(order_data))
         asyncio.create_task(send_admin_order_email_async(order_data))
+        
+        log.info("Payment verification completed and notifications queued", extra={
+            "order_id": order.get("order_id"),
+            "razorpay_order_id": order.get("razorpay_order_id"),
+            "razorpay_payment_id": body.razorpay_payment_id,
+        })
         
         return {
             "ok": True,

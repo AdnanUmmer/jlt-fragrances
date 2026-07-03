@@ -1,7 +1,8 @@
 import axios from "axios";
 
-export const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-export const API = `${BACKEND_URL}/api`;
+const resolvedBackendUrl = process.env.REACT_APP_BACKEND_URL || (typeof window !== "undefined" ? window.location.origin : "");
+export const BACKEND_URL = resolvedBackendUrl;
+export const API = `${resolvedBackendUrl}/api`;
 export const WHATSAPP_NUMBER = "+918089083404";
 export const WHATSAPP_DISPLAY = "WhatsApp Support";
 export const INSTAGRAM_URL = "https://www.instagram.com/jltfragrances?igsh=MWJxamRpdHN5ZmFj";

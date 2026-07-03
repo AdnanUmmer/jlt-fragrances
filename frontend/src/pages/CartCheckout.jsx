@@ -101,6 +101,7 @@ export const Checkout = () => {
   const [error, setError] = React.useState("");
   const [placed, setPlaced] = React.useState(false);
   const [orderData, setOrderData] = React.useState(null);
+  const [paymentId, setPaymentId] = React.useState("");
 
   // Load Razorpay script
   React.useEffect(() => {
@@ -164,19 +165,24 @@ export const Checkout = () => {
           // Step 3: Verify payment on backend
           try {
             const verifyRes = await http.post("/orders/verify-payment", {
-              razorpay_order_id: response.order_id,
+              razorpay_order_id: response.razorpay_order_id || response.order_id,
               razorpay_payment_id: response.razorpay_payment_id,
               razorpay_signature: response.razorpay_signature,
             });
 
             if (verifyRes.data.ok) {
+              setPaymentId(response.razorpay_payment_id || "");
               setPlaced(true);
               clearCart();
+              setLoading(false);
+              setError("");
             } else {
               setError("Payment verification failed. Please contact support.");
+              setLoading(false);
             }
           } catch (err) {
             setError(`Payment verification error: ${err.message}`);
+            setLoading(false);
           }
         },
         modal: {
@@ -209,7 +215,7 @@ export const Checkout = () => {
         </p>
         <div className="bg-jlt-gold/5 border border-jlt-gold/20 p-4 rounded mt-6 text-left text-sm">
           <div className="mb-2"><strong>Order ID:</strong> {orderData.order_id}</div>
-          <div className="mb-2"><strong>Payment ID:</strong> {orderData.razorpay_payment_id || "Processing..."}</div>
+          <div className="mb-2"><strong>Payment ID:</strong> {paymentId || "Processing..."}</div>
           <div><strong>Email:</strong> Confirmation sent to {form.email}</div>
         </div>
         <p className="mt-4 text-jlt-black/60 text-sm">Our team will process your order shortly.</p>
