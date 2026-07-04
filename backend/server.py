@@ -494,11 +494,11 @@ async def quiz_recommend(body: QuizRequest):
 @api.get("/discovery-sets")
 async def discovery_sets():
     sets = [
-        {"slug": "5-scent-discovery", "title": "The 5-Scent Discovery Set", "subtitle": "5 x 5ml samples", "price": 499, "description": "A curated mix of five bestselling premium-inspired fragrances. The perfect way to explore before committing.", "tag": "Bestseller"},
-        {"slug": "oud-discovery", "title": "Oud Discovery Set", "subtitle": "5 x 5ml samples", "price": 599, "description": "Deep, smoky, and unforgettable. Five of our richest oud-inspired compositions for evenings and special occasions.", "tag": "Rich & Bold"},
-        {"slug": "office-wear-discovery", "title": "Office Wear Discovery Set", "subtitle": "5 x 5ml samples", "price": 499, "description": "Clean, fresh, professional. Five subtle scents that work hard for daily wear and the workplace.", "tag": "Everyday"},
-        {"slug": "date-night-discovery", "title": "Date Night Discovery Set", "subtitle": "5 x 5ml samples", "price": 549, "description": "Seductive, warm and memorable. Five intimate compositions for unforgettable evenings.", "tag": "Seductive"},
-        {"slug": "wedding-festive-discovery", "title": "Wedding & Festive Discovery Set", "subtitle": "5 x 5ml samples", "price": 599, "description": "Bold, rich, festive. Five oud-and-amber compositions crafted for celebrations and milestone moments.", "tag": "Festive"},
+        {"slug": "5-scent-discovery", "title": "The 5-Scent Discovery Set", "subtitle": "5 x 8ml samples", "price": 849, "description": "A curated mix of five bestselling premium-inspired fragrances. The perfect way to explore before committing.", "tag": "Bestseller"},
+        {"slug": "oud-discovery", "title": "Oud Discovery Set", "subtitle": "5 x 8ml samples", "price": 899, "description": "Deep, smoky, and unforgettable. Five of our richest oud-inspired compositions for evenings and special occasions.", "tag": "Rich & Bold"},
+        {"slug": "office-wear-discovery", "title": "Office Wear Discovery Set", "subtitle": "5 x 8ml samples", "price": 849, "description": "Clean, fresh, professional. Five subtle scents that work hard for daily wear and the workplace.", "tag": "Everyday"},
+        {"slug": "date-night-discovery", "title": "Date Night Discovery Set", "subtitle": "5 x 8ml samples", "price": 849, "description": "Seductive, warm and memorable. Five intimate compositions for unforgettable evenings.", "tag": "Seductive"},
+        {"slug": "wedding-festive-discovery", "title": "Wedding & Festive Discovery Set", "subtitle": "5 x 8ml samples", "price": 899, "description": "Bold, rich, festive. Five oud-and-amber compositions crafted for celebrations and milestone moments.", "tag": "Festive"},
     ]
     return {"items": sets}
 
