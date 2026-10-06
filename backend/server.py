@@ -3,6 +3,10 @@ from pathlib import Path
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
+# Development overrides never load in production.
+import os
+if os.environ.get("APP_ENV", "development") != "production":
+    load_dotenv(ROOT_DIR / ".env.local")
 
 import os
 import io
@@ -13,6 +17,7 @@ import logging
 import hmac
 import hashlib
 import smtplib
+import re
 from email.message import EmailMessage
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
@@ -21,11 +26,15 @@ import bcrypt
 import jwt
 import razorpay
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, UploadFile, File, Query
+from fastapi.responses import PlainTextResponse, Response
+from xml.sax.saxutils import escape as xml_escape
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr
+from openpyxl import load_workbook
 
 from seed_helpers import build_product, slugify, SIZES
+from discovery import normalized, matches, filter_options, key
 
 mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
@@ -78,14 +87,15 @@ async def get_current_admin(request: Request) -> dict:
     if payload.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin only")
     user = await db.users.find_one({"email": payload["sub"]}, {"_id": 0, "password_hash": 0})
-    if not user:
-        raise HTTPException(status_code=401, detail="User not found")
+    if not user or user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access is required")
     return user
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
-    password: str
+    username: Optional[str] = None
+    email: Optional[str] = None
+    password: str = Field(min_length=1, max_length=72)
 
 
 class ContactRequest(BaseModel):
@@ -114,6 +124,10 @@ class ReviewCreate(BaseModel):
 class ProductUpsert(BaseModel):
     name: str
     brand_inspiration: str
+    description: str = ""
+    tags: List[str] = []
+    category: str = "Designer"
+    pricing_tier: str = "Designer/Arab"
     scent_family: List[str] = []
     moods: List[str] = []
     gender: str = "Unisex"
@@ -129,33 +143,255 @@ class ProductUpsert(BaseModel):
     is_bestseller: bool = False
     is_new_arrival: bool = False
     in_stock: bool = True
+    sizes: List[dict] = Field(default_factory=lambda: [
+        {"size": "20ml", "price": 449},
+        {"size": "50ml", "price": 1099},
+        {"size": "100ml", "price": 1699},
+    ])
+    is_active: bool = True
 
 
 class OrderItem(BaseModel):
-    slug: str
-    name: str
-    brand: str
-    size: str
-    price: int
-    qty: int
+    slug: str = Field(min_length=1, max_length=200)
+    name: str = Field(default="", max_length=200)
+    brand: str = Field(default="", max_length=200)
+    size: str = Field(min_length=1, max_length=20)
+    price: int = 0
+    qty: int = Field(ge=1, le=20)
 
 
 class CreateOrderRequest(BaseModel):
-    customer_name: str
+    customer_name: str = Field(min_length=2, max_length=100)
     customer_email: EmailStr
-    customer_phone: str
-    shipping_address: str
-    shipping_city: str
-    shipping_state: str
-    shipping_pin: str
-    items: List[OrderItem]
-    total_amount: int  # in paise (₹1 = 100 paise)
+    customer_phone: str = Field(min_length=7, max_length=20)
+    shipping_address: str = Field(min_length=5, max_length=400)
+    shipping_city: str = Field(min_length=2, max_length=80)
+    shipping_state: str = Field(min_length=2, max_length=80)
+    shipping_pin: str = Field(pattern=r"^[1-9][0-9]{5}$")
+    items: List[OrderItem] = Field(min_length=1, max_length=50)
+    total_amount: int = 0  # ignored; the server computes the payable amount
+    request_id: Optional[str] = Field(default=None, min_length=8, max_length=80)
 
 
 class PaymentVerifyRequest(BaseModel):
     razorpay_order_id: str
     razorpay_payment_id: str
     razorpay_signature: str
+
+
+class PricingDefaults(BaseModel):
+    designer_arab: dict = Field(default_factory=lambda: {"20ml": 449, "50ml": 1099, "100ml": 1699})
+    niche: dict = Field(default_factory=lambda: {"20ml": 549, "50ml": 1199, "100ml": 1799})
+    ultra_niche: dict = Field(default_factory=lambda: {"20ml": 649, "50ml": 1299, "100ml": 1899})
+
+
+class ShippingSettings(BaseModel):
+    enabled: bool = True
+    threshold: int = Field(default=2000, ge=0, le=1_000_000)
+    charge_below_threshold: int = Field(default=49, ge=0, le=100_000)
+    charge_at_or_above_threshold: int = Field(default=99, ge=0, le=100_000)
+
+
+async def get_shipping_settings() -> dict:
+    stored = await db.settings.find_one({"key": "shipping_settings"}, {"_id": 0, "value": 1})
+    try:
+        return ShippingSettings(**((stored or {}).get("value") or {})).model_dump()
+    except Exception:
+        return ShippingSettings().model_dump()
+
+
+def calculate_shipping(subtotal: int, settings: dict) -> int:
+    """Single source of truth for shipping, in whole rupees."""
+    if not settings.get("enabled", True):
+        return 0
+    return settings["charge_at_or_above_threshold"] if subtotal >= settings["threshold"] else settings["charge_below_threshold"]
+
+
+class ImportCommitRequest(BaseModel):
+    rows: List[dict]
+    mode: str = "merge"
+    confirm_replace: bool = False
+    legacy_mapping: bool = False
+
+
+LEGACY_TIERS = {449: ("Designer", "Designer/Arab"), 549: ("Niche", "Niche"), 649: ("Ultra Niche", "Ultra Niche")}
+IMPORT_HEADERS = {
+    "name": "Name", "brand": "Brand Inspiration", "category": "Category", "description": "Description",
+    "base_price": "Base Price", "sku": "SKU", "price_20": "20ml Price", "price_50": "50ml Price", "price_100": "100ml Price",
+}
+
+
+def clean_import_key(value: object) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+
+
+NOTE_COLUMNS = {
+    "top": ("Top Notes",),
+    "heart": ("Heart Notes", "Middle Notes", "Middle / Heart Notes"),
+    "base": ("Base Notes",),
+}
+
+
+def split_note_text(value: object) -> List[str]:
+    """Split one spreadsheet notes cell into its listed notes, keeping order and exact text."""
+    if value is None:
+        return []
+    return [part.strip() for part in re.split(r"[,;]", str(value)) if part.strip()]
+
+
+ATTRIBUTE_LIST_COLUMNS = {"scent_family": "Scent Family", "moods": "Moods", "occasions": "Occasions", "seasons": "Seasons", "tags": "Tags"}
+ATTRIBUTE_TEXT_COLUMNS = {"gender": "Gender", "longevity": "Longevity", "projection": "Projection"}
+ATTRIBUTE_FLAG_COLUMNS = {"is_bestseller": "Is Bestseller", "is_new_arrival": "Is New Arrival", "is_active": "Enabled"}
+GENDER_VALUES = {"men", "women", "unisex"}
+
+
+def parse_flag(value: object) -> Optional[bool]:
+    text = str(value).strip().lower() if value is not None else ""
+    if text in {"yes", "y", "true", "1"}: return True
+    if text in {"no", "n", "false", "0"}: return False
+    return None
+
+
+def parse_import_attributes(get, errors: list) -> dict:
+    """Read optional product attributes exactly as written in the workbook; blank cells are omitted."""
+    attrs = {}
+    for field, column in ATTRIBUTE_LIST_COLUMNS.items():
+        items = split_note_text(get(column))
+        if items: attrs[field] = items
+    for field, column in ATTRIBUTE_TEXT_COLUMNS.items():
+        text = str(get(column) or "").strip()
+        if text: attrs[field] = text
+    if "gender" in attrs and attrs["gender"].lower() not in GENDER_VALUES:
+        errors.append(f"Unsupported gender: {attrs['gender']}")
+    for field, column in ATTRIBUTE_FLAG_COLUMNS.items():
+        raw = get(column)
+        if raw is None or not str(raw).strip(): continue
+        flag = parse_flag(raw)
+        if flag is None: errors.append(f"Invalid {column} value: {raw}")
+        else: attrs[field] = flag
+    image = str(get("Image URL") or "").strip()
+    if image:
+        if re.match(r"^https?://", image, re.I): attrs["image_url"] = image
+        else: errors.append("Image URL must start with http:// or https://")
+    stock = get("Stock")
+    if stock is not None and str(stock).strip():
+        try:
+            count = int(float(stock))
+            if count < 0: raise ValueError
+            attrs["stock"], attrs["in_stock"] = count, count > 0
+        except (TypeError, ValueError):
+            errors.append("Invalid Stock value")
+    return attrs
+
+
+def clean_import_attributes(value: object) -> dict:
+    """Whitelist attributes returned from the preview before they reach MongoDB."""
+    source = value if isinstance(value, dict) else {}
+    cleaned = {}
+    for field in ATTRIBUTE_LIST_COLUMNS:
+        if isinstance(source.get(field), list):
+            cleaned[field] = [i.strip() for i in source[field] if isinstance(i, str) and i.strip()]
+    for field in ATTRIBUTE_TEXT_COLUMNS:
+        if isinstance(source.get(field), str) and source[field].strip(): cleaned[field] = source[field].strip()
+    for field in ATTRIBUTE_FLAG_COLUMNS:
+        if isinstance(source.get(field), bool): cleaned[field] = source[field]
+    if isinstance(source.get("image_url"), str) and re.match(r"^https?://", source["image_url"], re.I): cleaned["image_url"] = source["image_url"].strip()
+    if isinstance(source.get("stock"), int) and not isinstance(source["stock"], bool) and source["stock"] >= 0:
+        cleaned["stock"], cleaned["in_stock"] = source["stock"], source["stock"] > 0
+    return cleaned
+
+
+def clean_import_notes(value: object) -> dict:
+    """Validate notes passed back from the import preview; never invents notes."""
+    source = value if isinstance(value, dict) else {}
+    cleaned = {}
+    for level in NOTE_COLUMNS:
+        items = source.get(level)
+        cleaned[level] = [i.strip() for i in items if isinstance(i, str) and i.strip()] if isinstance(items, list) else []
+    return cleaned
+
+
+def parse_import_workbook(raw: bytes, legacy_mapping: bool = False) -> dict:
+    if len(raw) > 10 * 1024 * 1024:
+        raise HTTPException(413, "Workbook exceeds the 10 MB limit")
+    try:
+        workbook = load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+        sheet = workbook.active
+        values = list(sheet.iter_rows(values_only=True))
+    except Exception as exc:
+        raise HTTPException(422, f"Unable to read workbook: {exc}")
+    if not values:
+        raise HTTPException(422, "Workbook has no rows")
+    headers = [str(v).strip() if v is not None else "" for v in values[0]]
+    header_map = {name.lower(): idx for idx, name in enumerate(headers) if name}
+    if "name" not in header_map or "brand inspiration" not in header_map:
+        raise HTTPException(422, "Workbook requires Name and Brand Inspiration columns")
+    defaults = PricingDefaults().model_dump()
+    seen = {}
+    rows = []
+    blank_rows = []
+    serial_cols = {idx for name, idx in header_map.items() if name in {"sl no", "sl. no", "s.no", "s no", "sr no", "sr. no", "#", "serial no"}}
+    for source_row, raw_row in enumerate(values[1:], start=2):
+        # Rows holding only a serial number are numbering placeholders, not products.
+        if not any(v is not None and str(v).strip() for idx, v in enumerate(raw_row) if idx not in serial_cols):
+            if any(v is not None and str(v).strip() for v in raw_row):
+                blank_rows.append(source_row)
+            continue
+        get = lambda key: raw_row[header_map[key.lower()]] if key.lower() in header_map and header_map[key.lower()] < len(raw_row) else None
+        name, brand = str(get("Name") or "").strip(), str(get("Brand Inspiration") or "").strip()
+        category = str(get("Category") or "").strip()
+        sku = str(get("SKU") or get("Product Code") or "").strip()
+        base = get("Base Price")
+        try:
+            base_price = int(base) if base is not None and str(base).strip() else None
+        except (TypeError, ValueError):
+            base_price = None
+        errors = []
+        if not name: errors.append("Missing product name")
+        if not brand: errors.append("Missing brand")
+        if base is not None and str(base).strip() and base_price is None: errors.append("Invalid base price")
+        tier_category, tier = None, None
+        if category:
+            normalized = clean_import_key(category)
+            category_map = {"designer": ("Designer", "Designer/Arab"), "arab": ("Arab", "Designer/Arab"), "designer arab": ("Designer", "Designer/Arab"), "niche": ("Niche", "Niche"), "ultra niche": ("Ultra Niche", "Ultra Niche")}
+            if normalized not in category_map: errors.append(f"Unsupported category: {category}")
+            else: tier_category, tier = category_map[normalized]
+        elif legacy_mapping and base_price in LEGACY_TIERS:
+            tier_category, tier = LEGACY_TIERS[base_price]
+        else:
+            errors.append("Category missing and base price cannot resolve a tier")
+        tier_key = {"Designer/Arab": "designer_arab", "Niche": "niche", "Ultra Niche": "ultra_niche"}.get(tier)
+        prices = {}
+        for size, column in (("20ml", "20ml Price"), ("50ml", "50ml Price"), ("100ml", "100ml Price")):
+            explicit = get(column)
+            if explicit is not None and str(explicit).strip():
+                try: prices[size] = int(explicit)
+                except (TypeError, ValueError): errors.append(f"Invalid {size} price")
+        if tier_key:
+            prices = {size: prices.get(size, defaults[tier_key][size]) for size in ("20ml", "50ml", "100ml")}
+        notes = {}
+        for level, columns in NOTE_COLUMNS.items():
+            column = next((c for c in columns if c.lower() in header_map), None)
+            notes[level] = split_note_text(get(column)) if column else []
+        attributes = parse_import_attributes(get, errors)
+        key = sku.lower() if sku else f"{clean_import_key(brand)}::{clean_import_key(name)}"
+        fingerprint = (str(get("Description") or "").strip(), json.dumps(notes, sort_keys=True), json.dumps(attributes, sort_keys=True, default=str))
+        first = seen.get(key)
+        if first:
+            errors.append(f"Duplicate spreadsheet identifier: same brand + name as row {first['row']}" + ("; identical content" if first["fp"] == fingerprint else "; content differs - add a SKU column to keep both"))
+        else:
+            seen[key] = {"row": source_row, "fp": fingerprint}
+        rows.append({"source_row": source_row, "name": name, "brand": brand, "category": tier_category or category, "pricing_tier": tier, "sku": sku, "matching_identifier": key, "description": str(get("Description") or "").strip(), "notes": notes, "attributes": attributes, "sizes": [{"size": s, "price": prices[s]} for s in ("20ml", "50ml", "100ml")] if len(prices) == 3 else [], "action": "REJECT" if errors else "ADD", "validation_message": "; ".join(errors), "legacy_mapping": not bool(category) and bool(tier)} )
+    return {"headers": headers, "rows": rows, "total_rows": len(rows), "valid_rows": sum(r["action"] != "REJECT" for r in rows), "rejected_rows": sum(r["action"] == "REJECT" for r in rows), "duplicate_rows": sum("Duplicate spreadsheet identifier" in r["validation_message"] for r in rows), "blank_rows": blank_rows}
+
+
+def validate_pricing_defaults(value: dict) -> dict:
+    required = {"20ml", "50ml", "100ml"}
+    for tier in ("designer_arab", "niche", "ultra_niche"):
+        prices = value.get(tier, {})
+        if set(prices) != required or any(not isinstance(prices[size], int) or prices[size] <= 0 for size in required):
+            raise HTTPException(422, f"Invalid pricing defaults for {tier}")
+    return value
 
 
 # Razorpay helper functions
@@ -323,102 +559,55 @@ async def send_admin_order_email_async(order_data: dict) -> bool:
 
 @api.get("/")
 async def root():
-    return {"message": "JLT Fragrances API", "products": await db.products.count_documents({})}
+    return {"message": "JLT Fragrances API", "products": await db.products.count_documents({"is_active": {"$ne": False}})}
 
 
 @api.get("/products")
 async def list_products(
     q: Optional[str] = None,
-    brand: Optional[str] = None,
-    scent: Optional[str] = None,
-    occasion: Optional[str] = None,
-    gender: Optional[str] = None,
-    mood: Optional[str] = None,
-    bestseller: Optional[bool] = None,
-    new_arrival: Optional[bool] = None,
-    min_price: Optional[int] = None,
-    max_price: Optional[int] = None,
-    size: Optional[str] = None,
-    longevity: Optional[str] = None,
-    projection: Optional[str] = None,
-    niche: Optional[bool] = None,
-    sort: Optional[str] = "popular",
-    page: int = Query(1, ge=1),
-    limit: int = Query(24, ge=1, le=120),
+    brand: Optional[List[str]] = Query(None), category: Optional[List[str]] = Query(None),
+    tier: Optional[List[str]] = Query(None), scent: Optional[List[str]] = Query(None),
+    note: Optional[List[str]] = Query(None), occasion: Optional[List[str]] = Query(None),
+    season: Optional[List[str]] = Query(None), gender: Optional[List[str]] = Query(None),
+    mood: Optional[List[str]] = Query(None), size: Optional[List[str]] = Query(None),
+    longevity: Optional[List[str]] = Query(None), projection: Optional[List[str]] = Query(None),
+    bestseller: Optional[bool] = None, new_arrival: Optional[bool] = None, niche: Optional[bool] = None,
+    min_price: Optional[int] = Query(None, ge=0), max_price: Optional[int] = Query(None, ge=0),
+    sort: str = "popular", page: int = Query(1, ge=1), limit: int = Query(24, ge=1, le=120),
 ):
-    query: dict = {}
-    if q:
-        rx = {"$regex": q, "$options": "i"}
-        query["$or"] = [
-            {"name": rx},
-            {"brand_inspiration": rx},
-            {"notes.top": rx},
-            {"notes.heart": rx},
-            {"notes.base": rx},
-            {"occasions": rx},
-            {"scent_family": rx},
-        ]
-    if brand:
-        query["brand_inspiration"] = {"$regex": f"^{brand}$", "$options": "i"}
-    if scent:
-        query["scent_family"] = {"$in": [scent]}
-    if mood:
-        query["moods"] = {"$in": [mood]}
-    if occasion:
-        query["occasions"] = {"$in": [occasion]}
-    if gender:
-        query["gender"] = gender
-    if bestseller:
-        query["is_bestseller"] = True
-    if new_arrival:
-        query["is_new_arrival"] = True
-    if longevity:
-        query["longevity"] = {"$regex": longevity, "$options": "i"}
-    if projection:
-        query["projection"] = projection
-    if size:
-        query["sizes.size"] = size
-    if niche is not None:
-        query["is_niche"] = niche
-
-    sort_spec = [("is_bestseller", -1), ("rating", -1)]
-    if sort == "price_asc":
-        sort_spec = [("base_price", 1)]
-    elif sort == "price_desc":
-        sort_spec = [("base_price", -1)]
-    elif sort == "rating":
-        sort_spec = [("rating", -1)]
-    elif sort == "new":
-        sort_spec = [("is_new_arrival", -1), ("rating", -1)]
-
-    skip = (page - 1) * limit
-    total = await db.products.count_documents(query)
-    cursor = db.products.find(query, {"_id": 0}).sort(sort_spec).skip(skip).limit(limit)
-    items = await cursor.to_list(limit)
-    return {"items": items, "total": total, "page": page, "limit": limit}
+    if min_price is not None and max_price is not None and min_price > max_price:
+        raise HTTPException(422, "Minimum price must not exceed maximum price")
+    selected = {"brand":brand or [], "category":category or [], "tier":tier or [], "scent":scent or [],
+        "note":note or [], "occasion":occasion or [], "season":season or [], "gender":gender or [],
+        "mood":mood or [], "size":size or [], "longevity":longevity or [], "projection":projection or []}
+    products = [normalized(p) for p in await db.products.find({"is_active": {"$ne": False}}, {"_id":0}).to_list(None)]
+    items = [p for p in products if matches(p,selected,q,min_price,max_price,bestseller,new_arrival,niche)]
+    def available_price(p):
+        variants = [s["price"] for s in p["sizes"] if not size or key(s["size"]) in {key(v) for v in size}]
+        return min(variants, default=0)
+    if sort in ("price_asc","price_desc"):
+        items.sort(key=lambda p: (available_price(p), key(p["name"])), reverse=sort=="price_desc")
+    elif sort=="rating":
+        items.sort(key=lambda p: (-(p.get("rating") or 0), key(p["name"])))
+    elif sort=="new":
+        items.sort(key=lambda p: (not p.get("is_new_arrival"), key(p["name"])))
+    else:
+        items.sort(key=lambda p: (not p.get("is_bestseller"), -(p.get("rating") or 0), key(p["name"]),p["slug"]))
+    total=len(items)
+    return {"items":items[(page-1)*limit:page*limit], "total":total,"page":page,"limit":limit}
 
 
 @api.get("/products/filters")
 async def get_filters():
-    brands = await db.products.distinct("brand_inspiration")
-    niche_brands = await db.products.distinct("brand_inspiration", {"is_niche": True})
-    return {
-        "brands": sorted(brands),
-        "niche_brands": sorted(niche_brands),
-        "scent_families": ["Oud", "Floral", "Fresh", "Sweet", "Spicy", "Musky", "Clean", "Woody", "Citrus", "Leather"],
-        "moods": ["Fresh", "Sweet", "Oud", "Floral", "Clean", "Spicy", "Musky"],
-        "occasions": ["Office", "Date Night", "Wedding", "Daily Wear", "Gifting", "Festive Wear"],
-        "genders": ["Men", "Women", "Unisex"],
-        "sizes": ["20ml", "50ml", "100ml"],
-        "longevity": ["Moderate (4-6 hrs)", "Long Lasting (6-8 hrs)", "Long Lasting (8-12 hrs)"],
-        "projection": ["Soft", "Moderate", "Strong"],
-    }
+    products = [normalized(p) for p in await db.products.find({"is_active": {"$ne": False}}, {"_id":0}).to_list(None)]
+    return filter_options(products)
 
 
 @api.get("/brands")
 async def list_brands():
     """Alphabetical brand directory with product counts."""
     pipeline = [
+        {"$match": {"is_active": {"$ne": False}}},
         {"$group": {
             "_id": "$brand_inspiration",
             "count": {"$sum": 1},
@@ -454,16 +643,20 @@ async def list_combos():
 
 @api.get("/products/bestsellers")
 async def bestsellers(limit: int = 12):
-    items = await db.products.find({"is_bestseller": True}, {"_id": 0}).limit(limit).to_list(limit)
+    items = await db.products.find({"is_bestseller": True, "is_active": {"$ne": False}}, {"_id": 0}).limit(limit).to_list(limit)
+    if not items:
+        items = await db.products.find({"is_active": {"$ne": False}}, {"_id": 0}).sort([("rating", -1), ("name", 1)]).limit(limit).to_list(limit)
     return {"items": items}
 
 
 @api.get("/products/{slug}")
 async def get_product(slug: str):
-    p = await db.products.find_one({"slug": slug}, {"_id": 0})
+    p = await db.products.find_one({"slug": slug, "is_active": {"$ne": False}}, {"_id": 0})
     if not p:
         raise HTTPException(status_code=404, detail="Product not found")
+    p = normalized(p)
     related_q = {
+        "is_active": {"$ne": False},
         "slug": {"$ne": slug},
         "$or": [
             {"brand_inspiration": p["brand_inspiration"]},
@@ -476,7 +669,7 @@ async def get_product(slug: str):
 
 @api.post("/quiz/recommend")
 async def quiz_recommend(body: QuizRequest):
-    query = {"moods": body.scent, "projection": body.projection}
+    query = {"is_active": {"$ne": False}, "moods": body.scent, "projection": body.projection}
     if body.gender in {"Men", "Women", "Unisex"}:
         query["$or"] = [{"gender": body.gender}, {"gender": "Unisex"}]
     occ_map = {
@@ -487,7 +680,7 @@ async def quiz_recommend(body: QuizRequest):
         query["occasions"] = occ_map[body.occasion]
     items = await db.products.find(query, {"_id": 0}).sort([("rating", -1), ("is_bestseller", -1)]).limit(5).to_list(5)
     if len(items) < 3:
-        items = await db.products.find({"moods": body.scent}, {"_id": 0}).sort([("rating", -1)]).limit(5).to_list(5)
+        items = await db.products.find({"is_active": {"$ne": False}, "moods": body.scent}, {"_id": 0}).sort([("rating", -1)]).limit(5).to_list(5)
     return {"items": items[:5]}
 
 
@@ -529,9 +722,10 @@ async def add_review(slug: str, body: ReviewCreate):
 
 @api.post("/auth/login")
 async def login(body: LoginRequest):
-    user = await db.users.find_one({"email": body.email.lower()})
-    if not user or not verify_password(body.password, user["password_hash"]):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+    identifier = (body.username or body.email or "").strip().lower()
+    user = await db.users.find_one({"$or": [{"email": identifier}, {"username": identifier}]})
+    if not user or user.get("role") != "admin" or not verify_password(body.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid username or password")
     token = create_token(user["email"], user.get("role", "admin"))
     return {"token": token, "user": {"email": user["email"], "name": user.get("name"), "role": user.get("role")}}
 
@@ -546,9 +740,12 @@ async def create_product(body: ProductUpsert, admin: dict = Depends(get_current_
     cnt = await db.products.count_documents({})
     p = body.model_dump()
     p["slug"] = slugify(f"{p['name']}-inspired-by-{p['brand_inspiration']}-{cnt + 1}")
-    p["sizes"] = SIZES
-    p["base_price"] = 499
-    p["rating"] = 4.5
+    size_values = {item["size"]: item["price"] for item in p.get("sizes", []) if item.get("size") in {"20ml", "50ml", "100ml"}}
+    if len(size_values) != len(p.get("sizes", [])) or len(size_values) != 3 or any(not isinstance(v, int) or v <= 0 for v in size_values.values()):
+        raise HTTPException(422, "Exactly one valid price is required for each 20ml, 50ml, and 100ml variant")
+    p["sizes"] = [{"size": size, "price": size_values[size]} for size in ("20ml", "50ml", "100ml")]
+    p["base_price"] = p["sizes"][0]["price"]
+    p["rating"] = 0
     p["review_count"] = 0
     await db.products.insert_one(p)
     p.pop("_id", None)
@@ -560,16 +757,23 @@ async def update_product(slug: str, body: ProductUpsert, admin: dict = Depends(g
     existing = await db.products.find_one({"slug": slug})
     if not existing:
         raise HTTPException(404, "Product not found")
-    await db.products.update_one({"slug": slug}, {"$set": body.model_dump()})
-    return {"ok": True}
+    values = body.model_dump()
+    size_values = {item["size"]: item["price"] for item in values.get("sizes", []) if item.get("size") in {"20ml", "50ml", "100ml"}}
+    if len(size_values) != 3 or len(size_values) != len(values.get("sizes", [])) or any(not isinstance(v, int) or v <= 0 for v in size_values.values()):
+        raise HTTPException(422, "Exactly one valid price is required for each 20ml, 50ml, and 100ml variant")
+    values["sizes"] = [{"size": size, "price": size_values[size]} for size in ("20ml", "50ml", "100ml")]
+    values["base_price"] = values["sizes"][0]["price"]
+    await db.products.update_one({"slug": slug}, {"$set": values})
+    existing.pop("_id", None)
+    return {"ok": True, "product": {**existing, **values, "slug": slug}}
 
 
 @api.delete("/admin/products/{slug}")
 async def delete_product(slug: str, admin: dict = Depends(get_current_admin)):
-    res = await db.products.delete_one({"slug": slug})
-    if res.deleted_count == 0:
+    res = await db.products.update_one({"slug": slug}, {"$set": {"is_active": False, "archived_at": datetime.now(timezone.utc).isoformat()}})
+    if res.matched_count == 0:
         raise HTTPException(404, "Not found")
-    return {"ok": True}
+    return {"ok": True, "archived": True}
 
 
 @api.post("/admin/products/import-csv")
@@ -577,17 +781,222 @@ async def import_csv(file: UploadFile = File(...), admin: dict = Depends(get_cur
     content = (await file.read()).decode("utf-8", errors="replace")
     reader = csv.DictReader(io.StringIO(content))
     inserted = 0
-    cnt = await db.products.count_documents({})
+    seen = set()
     for row in reader:
         brand = (row.get("brand_inspiration") or row.get("brand") or "").strip()
         name = (row.get("name") or row.get("product_name") or "").strip()
         if not brand or not name:
             continue
-        cnt += 1
-        p = build_product(cnt, brand, name)
+        stable_slug = slugify(f"{name}-inspired-by-{brand}")
+        if stable_slug in seen:
+            continue
+        seen.add(stable_slug)
+        p = build_product(1, brand, name)
+        p["slug"] = stable_slug
+        p["is_active"] = True
         await db.products.update_one({"slug": p["slug"]}, {"$set": p}, upsert=True)
         inserted += 1
     return {"ok": True, "inserted": inserted}
+
+
+@api.get("/admin/pricing-defaults")
+async def get_pricing_defaults(admin: dict = Depends(get_current_admin)):
+    defaults = await db.settings.find_one({"key": "pricing_defaults"}, {"_id": 0, "value": 1})
+    return defaults.get("value", PricingDefaults().model_dump()) if defaults else PricingDefaults().model_dump()
+
+
+@api.put("/admin/pricing-defaults")
+async def update_pricing_defaults(body: PricingDefaults, apply_to_products: bool = False, admin: dict = Depends(get_current_admin)):
+    value = validate_pricing_defaults(body.model_dump())
+    await db.settings.update_one({"key": "pricing_defaults"}, {"$set": {"key": "pricing_defaults", "value": value, "updated_at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+    if apply_to_products:
+        tier_map = {"Designer/Arab": "designer_arab", "Niche": "niche", "Ultra Niche": "ultra_niche"}
+        for tier, key in tier_map.items():
+            prices = value[key]
+            await db.products.update_many({"pricing_tier": tier, "is_active": {"$ne": False}}, {"$set": {"sizes": [{"size": size, "price": prices[size]} for size in ("20ml", "50ml", "100ml")], "base_price": prices["20ml"]}})
+    return {"ok": True, "defaults": value, "applied": apply_to_products}
+
+
+@api.get("/shipping-settings")
+async def public_shipping_settings():
+    return await get_shipping_settings()
+
+
+@api.get("/admin/shipping-settings")
+async def admin_get_shipping_settings(admin: dict = Depends(get_current_admin)):
+    return await get_shipping_settings()
+
+
+@api.put("/admin/shipping-settings")
+async def admin_update_shipping_settings(body: ShippingSettings, admin: dict = Depends(get_current_admin)):
+    value = body.model_dump()
+    await db.settings.update_one({"key": "shipping_settings"}, {"$set": {"key": "shipping_settings", "value": value, "updated_at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+    return {"ok": True, "settings": value}
+
+
+class SeoEntry(BaseModel):
+    path: str = Field(min_length=1, max_length=300, pattern=r"^/[A-Za-z0-9\-_/.]*$")
+    title: str = Field(default="", max_length=120)
+    description: str = Field(default="", max_length=320)
+    canonical_url: str = Field(default="", max_length=500, pattern=r"^(https?://\S+)?$")
+    og_title: str = Field(default="", max_length=120)
+    og_description: str = Field(default="", max_length=320)
+    og_image: str = Field(default="", max_length=500, pattern=r"^(https?://\S+|/\S*)?$")
+    noindex: bool = False
+
+
+SITE_NAME = "JLT Fragrances"
+STATIC_SEO = {
+    "/": ("JLT Fragrances – Premium Inspired Perfumes Online India", "Shop 750+ premium-inspired perfumes in 20ml, 50ml and 100ml. Designer, Arab and niche inspired scents with pan-India delivery."),
+    "/shop": ("Shop Perfumes – Designer, Arab & Niche Inspired", "Browse and filter the full JLT Fragrances catalogue by brand, notes, occasion and size."),
+    "/brands": ("Fragrances by Brand Inspiration", "Explore perfumes inspired by your favourite fragrance houses."),
+    "/bestsellers": ("Bestselling Perfumes", "Our most loved premium-inspired fragrances."),
+    "/discovery-sets": ("Perfume Discovery Sets", "Try more scents with JLT Fragrances discovery sets and bundles."),
+    "/find-your-scent": ("Find Your Scent – Fragrance Quiz", "Answer a few questions and get fragrance recommendations matched to your taste."),
+    "/about": ("About JLT Fragrances", "Learn about JLT Fragrances and our approach to premium-inspired perfumes."),
+    "/contact": ("Contact JLT Fragrances", "Get in touch with JLT Fragrances for order support and recommendations."),
+    "/shipping-policy": ("Shipping Policy", "Shipping charges and delivery information for JLT Fragrances orders."),
+    "/refund-policy": ("Refund Policy", "Returns and refund information for JLT Fragrances."),
+    "/privacy-policy": ("Privacy Policy", "How JLT Fragrances collects and uses your information."),
+    "/terms": ("Terms & Conditions", "Terms of use for the JLT Fragrances website."),
+}
+NOINDEX_PATHS = ("/admin", "/cart", "/checkout", "/wishlist")
+
+
+def site_url() -> str:
+    return os.environ.get("SITE_URL", "").rstrip("/")
+
+
+def clip(text: str, limit: int) -> str:
+    text = " ".join((text or "").split())
+    return text if len(text) <= limit else text[: limit - 1].rsplit(" ", 1)[0] + "…"
+
+
+async def build_seo(path: str) -> dict:
+    """Admin overrides win; otherwise defaults come from real page/product data."""
+    path = "/" + path.strip("/") if path.strip("/") else "/"
+    seo = {"path": path, "title": "", "description": "", "canonical_url": "", "og_title": "", "og_description": "", "og_image": "", "noindex": path.startswith(NOINDEX_PATHS)}
+    if path in STATIC_SEO:
+        seo["title"], seo["description"] = STATIC_SEO[path]
+    elif path.startswith("/product/"):
+        product = await db.products.find_one({"slug": path[len("/product/"):], "is_active": {"$ne": False}}, {"_id": 0})
+        if product:
+            p = normalized(product)
+            seo["title"] = f"{p['name']} – Inspired by {p['brand_inspiration']}"
+            notes = ", ".join(dict.fromkeys(n for part in p["notes"].values() for n in part))
+            seo["description"] = clip(p.get("description") or f"{p['name']} inspired by {p['brand_inspiration']}. Notes: {notes}.", 160)
+            seo["og_image"] = p.get("image_url") or ""
+        else:
+            seo["noindex"] = True
+    elif path.startswith("/brand/"):
+        seo["title"] = f"Perfumes inspired by {path[len('/brand/'):].replace('-', ' ').title()}"
+    override = await db.seo.find_one({"path": path}, {"_id": 0})
+    if override:
+        seo.update({k: v for k, v in override.items() if k in seo and v not in ("", None)})
+        seo["noindex"] = bool(override.get("noindex", seo["noindex"]))
+    seo["site_name"] = SITE_NAME
+    seo["title"] = seo["title"] if SITE_NAME in seo["title"] else (f"{seo['title']} | {SITE_NAME}" if seo["title"] else SITE_NAME)
+    return seo
+
+
+@api.get("/seo")
+async def public_seo(path: str = "/"):
+    return await build_seo(path)
+
+
+@api.get("/admin/seo")
+async def admin_list_seo(admin: dict = Depends(get_current_admin)):
+    items = await db.seo.find({}, {"_id": 0}).sort("path", 1).to_list(1000)
+    return {"items": items, "static_paths": list(STATIC_SEO)}
+
+
+@api.put("/admin/seo")
+async def admin_upsert_seo(body: SeoEntry, admin: dict = Depends(get_current_admin)):
+    value = body.model_dump()
+    await db.seo.update_one({"path": body.path}, {"$set": {**value, "updated_at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+    return {"ok": True, "seo": value}
+
+
+@api.delete("/admin/seo")
+async def admin_delete_seo(path: str, admin: dict = Depends(get_current_admin)):
+    result = await db.seo.delete_one({"path": path})
+    if result.deleted_count == 0:
+        raise HTTPException(404, "No custom SEO for this path")
+    return {"ok": True}
+
+
+@app.get("/robots.txt", include_in_schema=False)
+async def robots_txt():
+    lines = ["User-agent: *", "Allow: /", "Disallow: /admin", "Disallow: /cart", "Disallow: /checkout", "Disallow: /wishlist", "Disallow: /api/"]
+    if site_url():
+        lines.append(f"Sitemap: {site_url()}/sitemap.xml")
+    return PlainTextResponse("\n".join(lines) + "\n")
+
+
+@app.get("/sitemap.xml", include_in_schema=False)
+async def sitemap_xml():
+    base = site_url()
+    noindexed = {e["path"] async for e in db.seo.find({"noindex": True}, {"_id": 0, "path": 1})}
+    paths = list(STATIC_SEO)
+    brands = sorted({p["brand_inspiration"] async for p in db.products.find({"is_active": {"$ne": False}}, {"_id": 0, "brand_inspiration": 1})})
+    paths += [f"/brand/{slugify(b)}" for b in brands]
+    async for p in db.products.find({"is_active": {"$ne": False}}, {"_id": 0, "slug": 1, "updated_at": 1}):
+        paths.append(f"/product/{p['slug']}")
+    body = "".join(f"<url><loc>{xml_escape(base + path)}</loc></url>" for path in paths if path not in noindexed)
+    return Response(f'<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{body}</urlset>', media_type="application/xml")
+
+
+@api.post("/admin/import/preview")
+async def preview_excel_import(file: UploadFile = File(...), legacy_mapping: bool = False, admin: dict = Depends(get_current_admin)):
+    if not file.filename or not file.filename.lower().endswith(".xlsx"):
+        raise HTTPException(415, "Only .xlsx files are supported")
+    result = parse_import_workbook(await file.read(), legacy_mapping=legacy_mapping)
+    for row in result["rows"]:
+        existing = await db.products.find_one({"import_identifier": row["matching_identifier"]}, {"_id": 0, "slug": 1})
+        if row["action"] != "REJECT": row["action"] = "UPDATE" if existing else "ADD"
+        row["existing_slug"] = existing.get("slug") if existing else None
+    return result
+
+
+@api.post("/admin/import/commit")
+async def commit_excel_import(body: ImportCommitRequest, admin: dict = Depends(get_current_admin)):
+    if body.mode not in {"merge", "replace"}:
+        raise HTTPException(422, "Mode must be merge or replace")
+    if body.mode == "replace" and not body.confirm_replace:
+        raise HTTPException(400, "Replace requires explicit confirmation")
+    valid = [row for row in body.rows if row.get("action") != "REJECT"]
+    identifiers = [row.get("matching_identifier") for row in valid]
+    if not identifiers or len(identifiers) != len(set(identifiers)):
+        raise HTTPException(422, "Duplicate matching identifiers")
+    now = datetime.now(timezone.utc).isoformat()
+    docs = []
+    for row in valid:
+        if not row.get("name") or not row.get("brand") or len(row.get("sizes", [])) != 3:
+            raise HTTPException(422, f"Invalid row {row.get('source_row')}")
+        slug = slugify(f"{row['name']}-inspired-by-{row['brand']}")
+        doc = build_product(1, row["brand"], row["name"])
+        managed = {"name": row["name"], "brand_inspiration": row["brand"], "category": row.get("category"), "pricing_tier": row.get("pricing_tier"), "description": row.get("description", ""), "notes": clean_import_notes(row.get("notes")), "sizes": row["sizes"], "base_price": row["sizes"][0]["price"], "import_identifier": row["matching_identifier"], "is_active": True, **clean_import_attributes(row.get("attributes"))}
+        doc.update({"slug": slug, **managed})
+        docs.append({"doc": doc, "managed": managed})
+    result = {"added": 0, "updated": 0, "unchanged": 0, "archived": 0, "rejected": len(body.rows) - len(valid), "duplicates": sum("Duplicate spreadsheet identifier" in (r.get("validation_message") or "") for r in body.rows)}
+    try:
+        for entry in docs:
+            doc, managed = entry["doc"], entry["managed"]
+            old = await db.products.find_one({"import_identifier": managed["import_identifier"]})
+            if old:
+                if all(old.get(k) == v for k, v in managed.items()): result["unchanged"] += 1
+                else: result["updated"] += 1
+            else: result["added"] += 1
+            # Existing products keep their slug, images, ratings and reviews; only Excel-supplied fields are written.
+            defaults = {k: v for k, v in doc.items() if k not in managed}
+            await db.products.update_one({"import_identifier": managed["import_identifier"]}, {"$set": {**managed, "updated_at": now}, "$setOnInsert": defaults}, upsert=True)
+        if body.mode == "replace":
+            keep = [entry["managed"]["import_identifier"] for entry in docs]
+            archived = await db.products.update_many({"is_active": {"$ne": False}, "import_identifier": {"$nin": keep}}, {"$set": {"is_active": False, "archived_at": now}})
+            result["archived"] = archived.modified_count
+    except Exception as exc:
+        raise HTTPException(500, f"Import failed before completion: {exc}")
+    return {"ok": True, **result, "total_source_rows": len(body.rows)}
 
 
 @api.get("/admin/contacts")
@@ -602,18 +1011,43 @@ async def list_contacts(admin: dict = Depends(get_current_admin)):
 async def create_order(body: CreateOrderRequest):
     """Create order and Razorpay payment."""
     try:
-        # Validate items exist
+        authoritative_items = []
+        subtotal_amount = 0
         for item in body.items:
-            product = await db.products.find_one({"slug": item.slug})
+            product = await db.products.find_one({"slug": item.slug, "is_active": {"$ne": False}})
             if not product:
                 raise HTTPException(status_code=400, detail=f"Product {item.slug} not found")
+            variant = next((v for v in product.get("sizes", []) if v.get("size") == item.size), None)
+            if not variant:
+                raise HTTPException(status_code=400, detail=f"Size {item.size} is not available for {item.slug}")
+            if product.get("in_stock") is False:
+                raise HTTPException(status_code=400, detail=f"{product['name']} is currently out of stock")
+            line_total = int(variant["price"]) * item.qty * 100
+            subtotal_amount += line_total
+            authoritative_items.append({"slug": item.slug, "name": product["name"], "brand": product["brand_inspiration"], "size": item.size, "price": int(variant["price"]), "qty": item.qty})
+        shipping_settings = await get_shipping_settings()
+        shipping_amount = calculate_shipping(subtotal_amount // 100, shipping_settings) * 100
+        total_amount = subtotal_amount + shipping_amount
+
+        # A retry with the same request_id and an identical cart reuses the existing order instead of creating another.
+        if body.request_id:
+            existing = await db.orders.find_one({"request_id": body.request_id, "customer_email": body.customer_email}, {"_id": 0})
+            if existing and existing.get("items") == authoritative_items and existing.get("total_amount") == total_amount:
+                return {
+                    "ok": True, "reused": True, "payment_status": existing.get("payment_status"),
+                    "order_id": existing["order_id"], "razorpay_order_id": existing["razorpay_order_id"],
+                    "razorpay_key_id": os.environ.get("RAZORPAY_KEY_ID", ""),
+                    "customer_name": existing["customer_name"], "customer_email": existing["customer_email"],
+                    "subtotal_amount": existing.get("subtotal_amount", subtotal_amount), "shipping_amount": existing.get("shipping_amount", shipping_amount),
+                    "total_amount": existing["total_amount"],
+                }
         
         # Create order ID
         order_id = f"ORD-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{str(uuid.uuid4())[:8].upper()}"
         
         # Create Razorpay order (amount in paise)
         razorpay_order = razorpay_client.order.create(
-            data={"amount": body.total_amount, "currency": "INR", "receipt": order_id}
+            data={"amount": total_amount, "currency": "INR", "receipt": order_id}
         )
         
         # Store order in MongoDB (status: pending until payment verified)
@@ -627,8 +1061,11 @@ async def create_order(body: CreateOrderRequest):
             "shipping_city": body.shipping_city,
             "shipping_state": body.shipping_state,
             "shipping_pin": body.shipping_pin,
-            "items": [item.model_dump() for item in body.items],
-            "total_amount": body.total_amount,  # in paise
+            "items": authoritative_items,
+            "subtotal_amount": subtotal_amount,
+            "shipping_amount": shipping_amount,
+            "total_amount": total_amount,
+            "request_id": body.request_id,
             "payment_status": "pending",
             "razorpay_payment_id": None,
             "razorpay_signature": None,
@@ -642,7 +1079,7 @@ async def create_order(body: CreateOrderRequest):
                 "order_id": order_id,
                 "razorpay_order_id": razorpay_order["id"],
                 "customer_email": body.customer_email,
-                "total_amount": body.total_amount,
+                "total_amount": total_amount,
             },
         )
         
@@ -653,7 +1090,9 @@ async def create_order(body: CreateOrderRequest):
             "razorpay_key_id": os.environ.get("RAZORPAY_KEY_ID", ""),
             "customer_name": body.customer_name,
             "customer_email": body.customer_email,
-            "total_amount": body.total_amount,
+            "subtotal_amount": subtotal_amount,
+            "shipping_amount": shipping_amount,
+            "total_amount": total_amount,
         }
     except HTTPException:
         raise
@@ -681,6 +1120,11 @@ async def verify_payment(body: PaymentVerifyRequest):
         if not order:
             log.warning(f"Order not found: {body.razorpay_order_id}")
             raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.get("payment_status") == "paid":
+            if order.get("razorpay_payment_id") != body.razorpay_payment_id:
+                raise HTTPException(status_code=409, detail="Order is already paid")
+            return {"ok": True, "already_verified": True, "order_id": order.get("order_id"), "total_amount": order.get("total_amount"), "message": "Payment already confirmed"}
         
         # Verify payment with Razorpay API
         try:
@@ -690,6 +1134,9 @@ async def verify_payment(body: PaymentVerifyRequest):
                 "amount": payment.get("amount"),
                 "status": payment.get("status"),
             })
+            if payment.get("order_id") != body.razorpay_order_id or payment.get("amount") != order.get("total_amount"):
+                log.warning("Payment %s does not match order %s", body.razorpay_payment_id, body.razorpay_order_id)
+                raise HTTPException(status_code=400, detail="Payment does not match this order")
             if payment.get("status") != "captured":
                 log.warning("Payment not captured for razorpay_payment_id=%s", body.razorpay_payment_id)
                 raise HTTPException(status_code=400, detail="Payment not captured")
@@ -699,9 +1146,9 @@ async def verify_payment(body: PaymentVerifyRequest):
             log.error("Razorpay verification error for payment %s: %s", body.razorpay_payment_id, e)
             raise HTTPException(status_code=500, detail="Payment verification failed")
         
-        # Update order: mark as paid
-        await db.orders.update_one(
-            {"razorpay_order_id": body.razorpay_order_id},
+        # Atomic transition so concurrent/repeated verifications confirm and notify only once
+        marked = await db.orders.update_one(
+            {"razorpay_order_id": body.razorpay_order_id, "payment_status": {"$ne": "paid"}},
             {
                 "$set": {
                     "payment_status": "paid",
@@ -711,6 +1158,8 @@ async def verify_payment(body: PaymentVerifyRequest):
                 }
             }
         )
+        if marked.modified_count == 0:
+            return {"ok": True, "already_verified": True, "order_id": order.get("order_id"), "total_amount": order.get("total_amount"), "message": "Payment already confirmed"}
         
         # Send Telegram notification (non-blocking)
         order_data = {
@@ -727,6 +1176,8 @@ async def verify_payment(body: PaymentVerifyRequest):
             "shipping_state": order.get("shipping_state"),
             "shipping_pin": order.get("shipping_pin"),
             "items": order.get("items", []),
+            "subtotal_amount": order.get("subtotal_amount"),
+            "shipping_amount": order.get("shipping_amount"),
             "total_amount": order.get("total_amount"),
             "created_at": order.get("created_at"),
         }
@@ -746,6 +1197,7 @@ async def verify_payment(body: PaymentVerifyRequest):
             "ok": True,
             "order_id": order.get("order_id"),
             "message": "Payment verified and order confirmed",
+            "total_amount": order.get("total_amount"),
         }
     except HTTPException:
         raise
@@ -795,7 +1247,10 @@ async def startup():
     await db.orders.create_index("razorpay_order_id", unique=True)
     await db.orders.create_index("customer_email")
     await db.orders.create_index("payment_status")
-    await db.orders.create_index("created_at", expireAfterSeconds=2592000)  # TTL: 30 days
+    try:
+        await db.orders.drop_index("created_at_1")
+    except Exception:
+        pass
 
     admin_email = os.environ["ADMIN_EMAIL"].lower()
     admin_password = os.environ["ADMIN_PASSWORD"]
@@ -809,6 +1264,16 @@ async def startup():
         log.info("Seeded admin user: %s", admin_email)
     elif not verify_password(admin_password, existing["password_hash"]):
         await db.users.update_one({"email": admin_email}, {"$set": {"password_hash": hash_password(admin_password)}})
+
+    if os.environ.get("APP_ENV", "development") != "production" and os.environ.get("ENABLE_DEV_ADMIN") == "true":
+        dev_username = os.environ["DEV_ADMIN_USERNAME"].strip().lower()
+        dev_password = os.environ["DEV_ADMIN_PASSWORD"]
+        dev_email = os.environ.get("DEV_ADMIN_EMAIL", "admin@local.jlt")
+        dev_user = await db.users.find_one({"email": dev_email})
+        updates = {"username":dev_username, "name":"JLT Development Admin", "role":"admin"}
+        if not dev_user or not verify_password(dev_password,dev_user["password_hash"]):
+            updates["password_hash"] = hash_password(dev_password)
+        await db.users.update_one({"email":dev_email},{"$set":updates},upsert=True)
 
     count = await db.products.count_documents({})
     if count == 0:

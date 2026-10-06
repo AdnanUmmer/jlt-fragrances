@@ -1,2 +1,41 @@
 /* Custom app styles (kept minimal — most styling lives in index.css) */
 .App { min-height: 100vh; }
+
+/* Intrinsic sizing keeps long fragrance/brand names inside grids. */
+*, *::before, *::after { box-sizing: border-box; }
+img { max-width: 100%; }
+main, aside, section, article, fieldset { min-width: 0; }
+h1, h2, h3, p { overflow-wrap: anywhere; }
+.btn-primary, .btn-outline { max-width: 100%; min-height: 44px; justify-content: center; text-align: center; }
+.btn-primary:disabled, .btn-outline:disabled { opacity: .45; cursor: not-allowed; }
+.btn-primary svg, .btn-outline svg { flex-shrink: 0; }
+.chip { min-height: 42px; }
+a:focus-visible, button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid #987037; outline-offset: 3px; }
+.tap-target { min-height: 44px; min-width: 44px; display: inline-flex; align-items: center; justify-content: center; }
+.whatsapp-order { padding-inline: .8rem; font-size: .72rem; line-height: 1.45; }
+.discovery-card > p { padding-bottom: 1.5rem; }
+.filter-group { padding: .9rem 0; border-bottom: 1px solid #ded7cb; }
+.filter-group summary { cursor: pointer; min-height: 36px; display: list-item; font-size: .9rem; padding-block: .4rem; }
+.filter-choice { min-height: 44px; display: flex; align-items: center; gap: .65rem; font-size: .85rem; cursor: pointer; padding: .4rem .15rem; }
+.filter-choice input { accent-color: #987037; width: 17px; height: 17px; flex-shrink: 0; }
+.filter-dialog { padding: 0; border: 0; margin: 0 0 0 auto; width: min(100%,420px); max-width: 100%; height: 100dvh; max-height: 100dvh; background: #f7f1e6; }
+.filter-dialog::backdrop { background: rgba(14,12,10,.55); }
+.filter-sheet { display: flex; flex-direction: column; height: 100%; padding-bottom: env(safe-area-inset-bottom); }
+.admin-login-shell { min-height: 100dvh; display: grid; place-items: center; padding: 24px 16px; background: radial-gradient(ellipse at top,#e9d9ba 0%,#f7f1e6 58%); }
+.admin-login-card { width: 100%; max-width: 440px; padding: 36px; background: #fffdf9; border: 1px solid #d9c9a8; box-shadow: 0 24px 70px #48320f12; }
+@media (max-width: 639px) {
+  .admin-login-card { padding: 26px 22px; }
+  h1.text-5xl { font-size: 2.35rem; }
+  h1.text-4xl { font-size: 2.15rem; }
+  .btn-primary, .btn-outline { padding-inline: 1rem; }
+  [data-testid="product-detail"] .grid-cols-3 { gap: .6rem; }
+  [data-testid="checkout-page"] form > div .grid-cols-3 { grid-template-columns: 1fr; }
+  [data-testid="cart-page"] [data-testid^="cart-item-"] { flex-wrap: wrap; gap: .7rem; }
+  [data-testid="cart-page"] [data-testid^="cart-item-"] > .flex-1 { min-width: 130px; }
+  [data-testid="cart-page"] [data-testid^="cart-item-"] > .text-right { margin-left: auto; }
+  [data-testid="whatsapp-fab"] { width: 46px; height: 46px; right: 12px; bottom: 12px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .marquee, .fade-in, .shimmer-text { animation: none; }
+  *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
+}

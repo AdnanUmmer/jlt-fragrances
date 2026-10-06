@@ -1,4 +1,5 @@
 import axios from "axios";
+import { whatsappUrl } from "./whatsapp";
 
 const resolvedBackendUrl = process.env.REACT_APP_BACKEND_URL || (typeof window !== "undefined" ? window.location.origin : "");
 export const BACKEND_URL = resolvedBackendUrl;
@@ -9,7 +10,7 @@ export const INSTAGRAM_URL = "https://www.instagram.com/jltfragrances?igsh=MWJxa
 export const SUPPORT_EMAIL = "justlikethatfragrances@gmail.com";
 
 export const waLink = (text = "Hi JLT Fragrances, I'd like a recommendation.") =>
-  `https://wa.me/${WHATSAPP_NUMBER.replace(/[^0-9]/g, "")}?text=${encodeURIComponent(text)}`;
+  whatsappUrl(WHATSAPP_NUMBER, text);
 
 const http = axios.create({ baseURL: API });
 http.interceptors.request.use((c) => {

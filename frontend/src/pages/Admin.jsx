@@ -1,124 +1,52 @@
-import React, { useEffect, useState } from "react";
-import { Navigate, useNavigate } from "react-router-dom";
+import React, { useCallback, useEffect, useState } from "react";
+import { ShippingSettingsPanel, SeoManagerPanel } from "./AdminSettings";
+import { useNavigate } from "react-router-dom";
 import http from "../lib/api";
 
-export const AdminLogin = () => {
-  const [form, setForm] = useState({ email: "justlikethatfragrances@gmail.com", password: "" });
-  const [err, setErr] = useState("");
-  const nav = useNavigate();
-  const submit = async (e) => {
-    e.preventDefault();
-    setErr("");
+const blank = { name: "", brand_inspiration: "", category: "Designer", pricing_tier: "Designer/Arab", description: "", image_url: "", gender: "Unisex", sizes: [{ size: "20ml", price: 449 }, { size: "50ml", price: 1099 }, { size: "100ml", price: 1699 }] };
+
+export { default as AdminLogin } from './AdminLogin';
+
+const ProductEditor = ({ product, onSaved, onCancel }) => {
+  const [form, setForm] = useState(product || blank);
+  const [error, setError] = useState("");
+  const save = async (event) => {
+    event.preventDefault();
     try {
-      const r = await http.post("/auth/login", form);
-      localStorage.setItem("jlt_admin_token", r.data.token);
-      nav("/admin");
-    } catch (ex) {
-      setErr(typeof ex.response?.data?.detail === "string" ? ex.response.data.detail : "Login failed");
-    }
+      const payload = { ...form, sizes: form.sizes.map(value => ({ size: value.size, price: Number(value.price) })) };
+      if (product) await http.put(`/admin/products/${product.slug}`, payload); else await http.post("/admin/products", payload);
+      onSaved();
+    } catch (exception) { setError(exception.response?.data?.detail || "Unable to save product"); }
   };
-  return (
-    <div className="max-w-md mx-auto px-6 py-16" data-testid="admin-login">
-      <div className="text-center mb-8">
-        <div className="text-[0.7rem] tracking-[0.3em] uppercase text-jlt-gold">Admin</div>
-        <h1 className="font-display text-4xl mt-2">Login</h1>
-      </div>
-      <form onSubmit={submit} className="bg-white border border-jlt-black/10 p-6 space-y-3">
-        <input className="input-luxe" type="email" required value={form.email} onChange={(e)=>setForm({...form,email:e.target.value})} data-testid="admin-email"/>
-        <input className="input-luxe" type="password" required placeholder="Password" value={form.password} onChange={(e)=>setForm({...form,password:e.target.value})} data-testid="admin-password"/>
-        {err && <div className="text-sm text-red-600" data-testid="admin-error">{err}</div>}
-        <button type="submit" className="btn-primary w-full justify-center" data-testid="admin-submit">Login</button>
-      </form>
-    </div>
-  );
+  const updateSize = (index, key, value) => setForm({ ...form, sizes: form.sizes.map((item, itemIndex) => itemIndex === index ? { ...item, [key]: key === "price" ? Number(value) : value } : item) });
+  return <form onSubmit={save} className="bg-white border border-jlt-black/10 p-5 grid sm:grid-cols-2 gap-3 mb-6">
+    <h2 className="font-display text-2xl sm:col-span-2">{product ? "Edit product" : "Add product"}</h2>
+    {["name", "brand_inspiration", "category", "image_url", "gender"].map(key => <label key={key}><span className="text-xs">{key.replace("_", " ")}</span><input className="input-luxe mt-1" required={key === "name" || key === "brand_inspiration"} value={form[key] || ""} onChange={e => setForm({ ...form, [key]: e.target.value })}/></label>)}
+    <label><span className="text-xs">Pricing tier</span><select className="input-luxe mt-1" value={form.pricing_tier} onChange={e => setForm({ ...form, pricing_tier: e.target.value })}><option>Designer/Arab</option><option>Niche</option><option>Ultra Niche</option></select></label>
+    <label className="sm:col-span-2"><span className="text-xs">Description</span><textarea className="input-luxe mt-1" rows={3} value={form.description || ""} onChange={e => setForm({ ...form, description: e.target.value })}/></label>
+    <div className="sm:col-span-2 grid grid-cols-3 gap-2">{form.sizes.map((value, index) => <label key={index}><span className="text-xs">Size</span><input className="input-luxe" value={value.size} onChange={e => updateSize(index, "size", e.target.value)}/><span className="text-xs">Price INR</span><input className="input-luxe" type="number" min="1" value={value.price} onChange={e => updateSize(index, "price", e.target.value)}/></label>)}</div>
+    {error && <p className="text-red-600 text-sm sm:col-span-2">{error}</p>}<div className="sm:col-span-2 flex flex-wrap gap-2"><button className="btn-primary">Save</button><button type="button" className="btn-outline" onClick={onCancel}>Cancel</button></div>
+  </form>;
 };
 
 export const AdminDashboard = () => {
-  const [me, setMe] = useState(null);
-  const [items, setItems] = useState([]);
-  const [total, setTotal] = useState(0);
-  const [q, setQ] = useState("");
-  const [page, setPage] = useState(1);
-  const [file, setFile] = useState(null);
-  const [importMsg, setImportMsg] = useState("");
-  const nav = useNavigate();
-
-  useEffect(() => {
-    http.get("/auth/me").then((r) => setMe(r.data)).catch(() => nav("/admin/login"));
-  }, [nav]);
-
-  const load = () => {
-    const qp = new URLSearchParams({ page: String(page), limit: "20" });
-    if (q) qp.set("q", q);
-    http.get(`/products?${qp.toString()}`).then((r) => { setItems(r.data.items); setTotal(r.data.total); });
-  };
-  useEffect(load, [page, q]);
-
-  const del = async (slug) => {
-    if (!window.confirm("Delete this product?")) return;
-    await http.delete(`/admin/products/${slug}`);
-    load();
-  };
-
-  const importCsv = async (e) => {
-    e.preventDefault();
-    if (!file) return;
-    const fd = new FormData(); fd.append("file", file);
-    const r = await http.post("/admin/products/import-csv", fd, { headers: { "Content-Type": "multipart/form-data" } });
-    setImportMsg(`Imported ${r.data.inserted} products`);
-    load();
-  };
-
-  const logout = () => { localStorage.removeItem("jlt_admin_token"); nav("/admin/login"); };
-
-  if (!me) return <div className="p-10 text-center" data-testid="admin-loading">Loading…</div>;
-
-  return (
-    <div className="max-w-7xl mx-auto px-6 py-10" data-testid="admin-dashboard">
-      <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
-        <div>
-          <h1 className="font-display text-3xl">Admin Dashboard</h1>
-          <div className="text-xs text-jlt-black/60">{me.email} · {total} products</div>
-        </div>
-        <button onClick={logout} className="btn-outline" data-testid="admin-logout">Logout</button>
-      </div>
-
-      <div className="bg-white border border-jlt-black/10 p-5 mb-6">
-        <div className="text-[0.7rem] tracking-[0.3em] uppercase text-jlt-gold mb-2">Bulk Import (CSV)</div>
-        <form onSubmit={importCsv} className="flex flex-wrap gap-3 items-center">
-          <input type="file" accept=".csv" onChange={(e)=>setFile(e.target.files[0])} data-testid="csv-input"/>
-          <button className="btn-primary" data-testid="csv-import">Import CSV</button>
-          {importMsg && <span className="text-sm text-jlt-gold">{importMsg}</span>}
-        </form>
-        <div className="text-xs text-jlt-black/60 mt-2">CSV columns: <code>brand_inspiration, name</code></div>
-      </div>
-
-      <input className="input-luxe mb-4" placeholder="Search products…" value={q} onChange={(e)=>{setPage(1); setQ(e.target.value);}} data-testid="admin-search"/>
-
-      <div className="bg-white border border-jlt-black/10 overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead className="bg-jlt-bone text-left">
-            <tr><th className="p-3">Name</th><th className="p-3">Brand</th><th className="p-3">Gender</th><th className="p-3">Family</th><th className="p-3">Bestseller</th><th className="p-3">Actions</th></tr>
-          </thead>
-          <tbody>
-            {items.map((p) => (
-              <tr key={p.slug} className="border-t border-jlt-black/10" data-testid={`admin-row-${p.slug}`}>
-                <td className="p-3 font-display">{p.name}</td>
-                <td className="p-3">{p.brand_inspiration}</td>
-                <td className="p-3">{p.gender}</td>
-                <td className="p-3">{p.scent_family.join(", ")}</td>
-                <td className="p-3">{p.is_bestseller ? "★" : "—"}</td>
-                <td className="p-3"><button onClick={() => del(p.slug)} className="text-red-600 text-xs" data-testid={`admin-delete-${p.slug}`}>Delete</button></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <div className="flex justify-center gap-3 mt-6">
-        <button disabled={page === 1} onClick={() => setPage(p => p - 1)} className="btn-outline disabled:opacity-40">Prev</button>
-        <span className="self-center text-sm">Page {page} / {Math.max(1, Math.ceil(total / 20))}</span>
-        <button disabled={page * 20 >= total} onClick={() => setPage(p => p + 1)} className="btn-outline disabled:opacity-40">Next</button>
-      </div>
-    </div>
-  );
+  const [me, setMe] = useState(null); const [items, setItems] = useState([]); const [query, setQuery] = useState(""); const [editor, setEditor] = useState(null); const [file, setFile] = useState(null); const [preview, setPreview] = useState(null); const [defaults, setDefaults] = useState(null); const [message, setMessage] = useState(""); const nav = useNavigate();
+  const [page,setPage]=useState(1); const [total,setTotal]=useState(0); const [category,setCategory]=useState(""); const [categories,setCategories]=useState([]); const [error,setError]=useState(""); const [archiveTarget,setArchiveTarget]=useState(null);
+  const load = useCallback(() => http.get('/products',{params:{limit:20,q:query,page,...(category?{category}:{})}}).then(response=>{setItems(response.data.items);setTotal(response.data.total);}).catch(()=>setError('Unable to load products. Please try again.')), [query,page,category]);
+  useEffect(() => { http.get("/auth/me").then(response => setMe(response.data)).catch(() => nav("/admin/login")); http.get("/admin/pricing-defaults").then(response => setDefaults(response.data)).catch(()=>setError("Unable to load pricing defaults.")); http.get("/products/filters").then(r=>setCategories(r.data.categories)).catch(()=>setError("Unable to load categories.")); }, [nav]);
+  useEffect(() => { load(); }, [load]);
+  const archive = async () => { try {await http.delete(`/admin/products/${archiveTarget.slug}`);setArchiveTarget(null);setMessage('Product archived. Historical orders are retained.');load();} catch(e){setError('Unable to archive product.');} };
+  const previewFile = async () => { if (!file) return; try { const data = new FormData(); data.append("file", file); const response = await http.post("/admin/import/preview?legacy_mapping=true", data); setPreview(response.data); } catch(e){setError(typeof e.response?.data?.detail === "string" ? e.response.data.detail : "Unable to preview workbook.");} };
+  const commit = async (mode) => { try { if (mode === "replace" && !window.confirm("Replace active catalogue and archive unrelated products?")) return; const response = await http.post("/admin/import/commit", { rows: preview.rows, mode, confirm_replace: mode === "replace", legacy_mapping: true }); setMessage(`Import complete: ${response.data.added} added, ${response.data.updated} updated, ${response.data.unchanged ?? 0} unchanged, ${response.data.duplicates ?? 0} duplicates skipped, ${response.data.archived} archived, ${response.data.rejected} rejected`); setPreview(null); load(); } catch(e){setError(typeof e.response?.data?.detail === "string" ? e.response.data.detail : "Import failed. Review the workbook.");} };
+  const saveDefaults = async (apply) => { if(apply && !window.confirm("Apply defaults to every active product, overwriting custom prices?"))return; try { const response = await http.put(`/admin/pricing-defaults?apply_to_products=${apply}`, defaults); setDefaults(response.data.defaults); setMessage(apply ? "Defaults saved and applied." : "Defaults saved only."); if (apply) load(); } catch(e){setError("Unable to save defaults. Check all prices.");} };
+  if (!me) return <div className="p-10 text-center">Loading...</div>;
+  return <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8" data-testid="admin-dashboard"><div className="flex justify-between gap-3 flex-wrap mb-6"><div><h1 className="font-display text-3xl">Admin Dashboard</h1><p className="text-xs text-jlt-black/60">{me.email}</p></div><button className="btn-outline" onClick={() => { localStorage.removeItem("jlt_admin_token"); nav("/admin/login"); }}>Logout</button></div>
+    {error && <div role="alert" className="text-red-700 border p-3 mb-4">{error}<button className="underline ml-3" onClick={()=>{setError("");load();}}>Retry</button></div>}
+    {archiveTarget && <div role="alertdialog" aria-label="Confirm archive" className="border border-jlt-gold bg-white p-5 mb-4"><p>Archive {archiveTarget.name}? Historical orders will remain intact.</p><div className="flex gap-3 mt-3"><button className="btn-primary" onClick={archive}>Confirm archive</button><button className="btn-outline" onClick={()=>setArchiveTarget(null)}>Cancel</button></div></div>}
+    {message && <div className="border border-jlt-gold/40 bg-jlt-gold/10 p-3 mb-4 text-sm">{message}</div>}
+    <section className="bg-white border border-jlt-black/10 p-5 mb-6"><h2 className="font-display text-2xl">Pricing defaults</h2><p className="text-xs text-jlt-black/60">Designer and Arab share a tier. Saving defaults does not change customized products unless you explicitly apply them.</p>{defaults && <><div className="grid sm:grid-cols-3 gap-3 mt-4">{Object.entries(defaults).map(([tier, prices]) => <div key={tier}><h3 className="text-sm mb-2">{tier.replace("_", " ")}</h3>{["20ml", "50ml", "100ml"].map(size => <label key={size} className="flex items-center gap-2 mb-2 text-xs"><span className="w-12">{size}</span><input className="input-luxe" type="number" min="1" value={prices[size]} onChange={e => setDefaults({ ...defaults, [tier]: { ...prices, [size]: Number(e.target.value) } })}/></label>)}</div>)}</div><div className="flex flex-wrap gap-2 mt-3"><button className="btn-primary" onClick={() => saveDefaults(false)}>Save defaults only</button><button className="btn-outline" onClick={() => saveDefaults(true)}>Save and apply to products</button></div></>}</section>
+    <ShippingSettingsPanel /><SeoManagerPanel /><section className="bg-white border border-jlt-black/10 p-5 mb-6"><h2 className="font-display text-2xl">Excel import</h2><p className="text-xs text-jlt-black/60 mt-1">Accepted .xlsx. Required: Name and Brand Inspiration. Optional: Category, SKU/Product Code, Description, 20ml Price, 50ml Price, 100ml Price. For this legacy workbook only, base prices INR 449/549/649 map to Designer/Arab, Niche, and Ultra Niche. Matching uses SKU, otherwise normalized brand + name.</p><div className="flex flex-wrap gap-2 mt-3"><input className="max-w-full" aria-label="Excel workbook" type="file" accept=".xlsx" onChange={e => setFile(e.target.files[0])}/><button className="btn-primary" onClick={previewFile}>Preview workbook</button></div>{preview && <div className="mt-4"><div className="text-sm mb-2">{preview.total_rows} rows · {preview.valid_rows} valid · {preview.rejected_rows} rejected</div><div className="overflow-x-auto max-h-96"><table className="text-xs min-w-[900px] w-full"><thead><tr><th>Row</th><th>Product</th><th>Brand</th><th>Tier</th><th>Prices</th><th>Action</th><th>Message</th></tr></thead><tbody>{preview.rows.map(row => <tr key={row.source_row} className="border-t"><td>{row.source_row}</td><td>{row.name}</td><td>{row.brand}</td><td>{row.pricing_tier || "-"}</td><td>{row.sizes.map(size => `${size.size}: INR ${size.price}`).join(" · ")}</td><td>{row.action}</td><td>{row.validation_message || (row.legacy_mapping ? "Legacy base-price mapping" : "")}</td></tr>)}</tbody></table></div><div className="flex flex-wrap gap-2 mt-3"><button className="btn-primary" onClick={() => commit("merge")}>Commit merge</button><button className="btn-outline" onClick={() => commit("replace")}>Confirm replace active catalogue</button></div></div>}</section>
+    <div className="flex flex-wrap gap-2 mb-4"><p className="w-full text-sm" role="status">{total} products</p><select aria-label="Filter admin category" className="input-luxe sm:!w-auto" value={category} onChange={e=>{setCategory(e.target.value);setPage(1);}}><option value="">All categories</option>{categories.map(c=><option key={c}>{c}</option>)}</select><input className="input-luxe flex-1" aria-label="Search products" placeholder="Search products" value={query} onChange={e => {setQuery(e.target.value);setPage(1);}}/><button className="btn-outline" onClick={() => setEditor(blank)}>Add product</button></div>{editor && <ProductEditor product={editor.slug ? editor : null} onSaved={() => { setEditor(null); load(); }} onCancel={() => setEditor(null)}/>}<div className="bg-white border border-jlt-black/10 overflow-x-auto"><table className="w-full text-sm min-w-[760px]"><thead className="bg-jlt-bone text-left"><tr><th className="p-3">Name</th><th className="p-3">Brand</th><th className="p-3">Tier</th><th className="p-3">Variants</th><th className="p-3">Actions</th></tr></thead><tbody>{items.map(product => <tr key={product.slug} className="border-t"><td className="p-3">{product.name}</td><td className="p-3">{product.brand_inspiration}</td><td className="p-3">{product.pricing_tier || "-"}</td><td className="p-3">{(product.sizes || []).map(size => `${size.size}: INR ${size.price}`).join(" · ")}</td><td className="p-3 flex gap-2"><button className="text-jlt-gold" onClick={() => setEditor(product)}>Edit</button><button className="text-red-600" onClick={() => setArchiveTarget(product)}>Archive</button></td></tr>)}</tbody></table></div>
+    <div className="flex flex-wrap justify-center items-center gap-3 mt-6"><button className="btn-outline" disabled={page===1} onClick={()=>setPage(n=>n-1)}>Previous</button><span className="text-sm">Page {page} / {Math.max(1,Math.ceil(total/20))}</span><button className="btn-outline" disabled={page*20>=total} onClick={()=>setPage(n=>n+1)}>Next</button></div>
+  </div>;
 };

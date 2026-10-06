@@ -3,9 +3,16 @@ import { Link, useNavigate } from "react-router-dom";
 import { Minus, Plus, Trash2, ShoppingBag, Heart } from "lucide-react";
 import { useCart, useWish } from "../lib/store";
 import http from "../lib/api";
+import { useShippingSettings, computeShipping } from "../lib/shipping";
+
+const PIN_RE = /^[1-9][0-9]{5}$/;
+const PHONE_RE = /^[6-9][0-9]{9}$/;
+const newRequestId = () => (window.crypto?.randomUUID ? window.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`);
 
 export const Cart = () => {
   const { cart, removeFromCart, updateQty, cartTotal, clearCart } = useCart();
+  const shippingSettings = useShippingSettings();
+  const shippingFee = computeShipping(cartTotal, shippingSettings);
   const nav = useNavigate();
   if (cart.length === 0) return (
     <div className="max-w-3xl mx-auto px-6 py-20 text-center" data-testid="cart-empty">
@@ -44,8 +51,8 @@ export const Cart = () => {
         <aside className="bg-white border border-jlt-black/10 p-6 h-fit" data-testid="cart-summary">
           <div className="text-[0.7rem] tracking-[0.3em] uppercase text-jlt-gold">Order Summary</div>
           <div className="flex justify-between mt-4 text-sm"><span>Subtotal</span><span>₹{cartTotal}</span></div>
-          <div className="flex justify-between text-sm"><span>Shipping</span><span>{cartTotal >= 999 ? "FREE" : "₹49"}</span></div>
-          <div className="border-t border-jlt-black/10 mt-4 pt-4 flex justify-between font-display text-xl"><span>Total</span><span>₹{cartTotal >= 999 ? cartTotal : cartTotal + 49}</span></div>
+          <div className="flex justify-between text-sm"><span>Shipping</span><span>{shippingFee ? `₹${shippingFee}` : "FREE"}</span></div>
+          <div className="border-t border-jlt-black/10 mt-4 pt-4 flex justify-between font-display text-xl"><span>Total</span><span>₹{cartTotal + shippingFee}</span></div>
           <button onClick={() => nav("/checkout")} className="btn-primary w-full justify-center mt-5" data-testid="checkout-btn">Checkout</button>
           <button onClick={clearCart} className="text-xs text-jlt-black/50 mt-3 w-full text-center" data-testid="clear-cart">Clear cart</button>
         </aside>
@@ -86,7 +93,9 @@ export const Wishlist = () => {
 export const Checkout = () => {
   const { cart, cartTotal, clearCart } = useCart();
   const nav = useNavigate();
-  
+  const shippingSettings = useShippingSettings();
+  const requestIdRef = React.useRef(newRequestId());
+  const submittingRef = React.useRef(false);
   const [form, setForm] = React.useState({
     name: "",
     email: "",
@@ -115,22 +124,25 @@ export const Checkout = () => {
 
   const submit = async (e) => {
     e.preventDefault();
+    if (submittingRef.current) return;
+    const phone = form.phone.replace(/[\s-]/g, "").replace(/^(\+91|91)(?=[6-9]\d{9}$)/, "");
+    if (!PHONE_RE.test(phone)) return setError("Please enter a valid 10-digit mobile number.");
+    if (!PIN_RE.test(form.pin.trim())) return setError("Please enter a valid 6-digit PIN code.");
+    submittingRef.current = true;
     setLoading(true);
     setError("");
 
     try {
-      const total = cartTotal >= 999 ? cartTotal : cartTotal + 49;
-      const totalPaise = total * 100; // Convert to paise
-
       // Step 1: Create order on backend
       const createOrderRes = await http.post("/orders", {
-        customer_name: form.name,
-        customer_email: form.email,
-        customer_phone: form.phone,
-        shipping_address: form.address,
-        shipping_city: form.city,
-        shipping_state: form.state,
-        shipping_pin: form.pin,
+        customer_name: form.name.trim(),
+        customer_email: form.email.trim(),
+        customer_phone: phone,
+        shipping_address: form.address.trim(),
+        shipping_city: form.city.trim(),
+        shipping_state: form.state.trim(),
+        shipping_pin: form.pin.trim(),
+        request_id: requestIdRef.current,
         items: cart.map((item) => ({
           slug: item.slug,
           name: item.name,
@@ -139,7 +151,7 @@ export const Checkout = () => {
           price: item.price,
           qty: item.qty,
         })),
-        total_amount: totalPaise,
+        total_amount: 0,
       });
 
       if (!createOrderRes.data.ok) {
@@ -147,8 +159,16 @@ export const Checkout = () => {
       }
 
       const orderData = createOrderRes.data;
+      if (orderData.payment_status === "paid") {
+        setOrderData(orderData);
+        setPaidTotal(orderData.total_amount / 100);
+        setPlaced(true);
+        clearCart();
+        return;
+      }
       setOrderData(orderData);
-      setPaidTotal(total);
+      const totalPaise = orderData.total_amount;
+      setPaidTotal(totalPaise / 100);
 
       // Step 2: Open Razorpay checkout
       const options = {
@@ -180,16 +200,19 @@ export const Checkout = () => {
               setError("");
             } else {
               setError("Payment verification failed. Please contact support.");
+              submittingRef.current = false;
               setLoading(false);
             }
           } catch (err) {
-            setError(`Payment verification error: ${err.message}`);
+            setError("We could not confirm your payment. If money was debited, please contact support with your order ID before paying again.");
+            submittingRef.current = false;
             setLoading(false);
           }
         },
         modal: {
           ondismiss: () => {
-            setError("Payment cancelled");
+            setError("Payment was cancelled. You have not been charged - you can try again when ready.");
+            submittingRef.current = false;
             setLoading(false);
           },
         },
@@ -202,13 +225,14 @@ export const Checkout = () => {
       const rzp = new window.Razorpay(options);
       rzp.open();
     } catch (err) {
-      setError(`Checkout error: ${err.message}`);
+      setError(err.response?.data?.detail && typeof err.response.data.detail === "string" ? err.response.data.detail : "We could not start your payment. Please check your details and try again.");
+      submittingRef.current = false;
       setLoading(false);
     }
   };
 
   if (placed && orderData) {
-    const displayTotal = paidTotal ?? (orderData.total_amount ? orderData.total_amount / 100 : (cartTotal >= 999 ? cartTotal : cartTotal + 49));
+    const displayTotal = paidTotal ?? (orderData.total_amount ? orderData.total_amount / 100 : (cartTotal + computeShipping(cartTotal, shippingSettings)));
     return (
       <div className="max-w-2xl mx-auto px-6 py-20 text-center" data-testid="order-placed">
         <h1 className="font-display text-4xl">✓ Order Confirmed!</h1>
@@ -235,7 +259,7 @@ export const Checkout = () => {
     );
   }
 
-  const total = cartTotal >= 999 ? cartTotal : cartTotal + 49;
+  const total = cartTotal + computeShipping(cartTotal, shippingSettings);
 
   return (
     <div className="max-w-6xl mx-auto px-6 py-12" data-testid="checkout-page">
@@ -252,7 +276,7 @@ export const Checkout = () => {
           <div className="text-[0.7rem] tracking-[0.3em] uppercase text-jlt-gold mb-2">Shipping Details</div>
           <input
             className="input-luxe"
-            placeholder="Full Name"
+            placeholder="Full Name" aria-label="Full name" autoComplete="name"
             required
             value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })}
@@ -262,7 +286,7 @@ export const Checkout = () => {
             <input
               className="input-luxe"
               type="email"
-              placeholder="Email"
+              placeholder="Email" aria-label="Email" autoComplete="email"
               required
               value={form.email}
               onChange={(e) => setForm({ ...form, email: e.target.value })}
@@ -270,7 +294,7 @@ export const Checkout = () => {
             />
             <input
               className="input-luxe"
-              placeholder="Phone"
+              placeholder="Mobile number (10 digits)" aria-label="Mobile number" autoComplete="tel" inputMode="tel"
               required
               value={form.phone}
               onChange={(e) => setForm({ ...form, phone: e.target.value })}
@@ -280,7 +304,7 @@ export const Checkout = () => {
           <textarea
             className="input-luxe"
             rows={2}
-            placeholder="Address"
+            placeholder="Address" aria-label="Address" autoComplete="street-address"
             required
             value={form.address}
             onChange={(e) => setForm({ ...form, address: e.target.value })}
@@ -289,7 +313,7 @@ export const Checkout = () => {
           <div className="grid grid-cols-3 gap-3">
             <input
               className="input-luxe"
-              placeholder="City"
+              placeholder="City" aria-label="City" autoComplete="address-level2"
               required
               value={form.city}
               onChange={(e) => setForm({ ...form, city: e.target.value })}
@@ -297,7 +321,7 @@ export const Checkout = () => {
             />
             <input
               className="input-luxe"
-              placeholder="State"
+              placeholder="State" aria-label="State" autoComplete="address-level1"
               required
               value={form.state}
               onChange={(e) => setForm({ ...form, state: e.target.value })}
@@ -305,7 +329,7 @@ export const Checkout = () => {
             />
             <input
               className="input-luxe"
-              placeholder="PIN"
+              placeholder="PIN code" aria-label="PIN code" autoComplete="postal-code" inputMode="numeric" maxLength={6}
               required
               value={form.pin}
               onChange={(e) => setForm({ ...form, pin: e.target.value })}

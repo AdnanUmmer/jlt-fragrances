@@ -2,6 +2,7 @@ import React from "react";
 import "./App.css";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { Layout } from "./components/Layout";
+import { RouteSeo } from "./components/RouteSeo";
 import { StoreProvider } from "./lib/store";
 import Home from "./pages/Home";
 import Shop from "./pages/Shop";
@@ -18,6 +19,7 @@ function App() {
   return (
     <StoreProvider>
       <BrowserRouter>
+        <RouteSeo />
         <Routes>
           <Route path="/admin/login" element={<AdminLogin />} />
           <Route path="/admin" element={<AdminDashboard />} />

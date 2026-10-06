@@ -83,7 +83,7 @@ export const Shipping = () => (
       ["Delivery Time", "Pan India delivery typically takes 3–7 business days depending on your location."],
       ["Tracking", "Tracking details are sent to you via email and WhatsApp once your order is dispatched."],
       ["Delays", "Delays may occur for remote pin codes, courier disruptions, or during peak festive periods. We'll always keep you updated."],
-      ["Free Shipping", "Free shipping on orders above ₹999. Below that, a nominal shipping fee applies at checkout."],
+      ["Shipping Charges", "Orders below ₹2,000 ship for ₹49. Orders of ₹2,000 and above ship for ₹99. The exact shipping charge is shown at checkout before you pay."],
     ]}/>
 );
 export const Refund = () => (

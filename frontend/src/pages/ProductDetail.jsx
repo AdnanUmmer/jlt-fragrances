@@ -1,13 +1,16 @@
 import React, { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { Heart, ShoppingBag, MessageCircle, Truck, Shield, RotateCcw, Star } from "lucide-react";
-import http, { waLink } from "../lib/api";
+import http from "../lib/api";
 import { useCart, useWish } from "../lib/store";
+import WhatsAppOrder from "../components/WhatsAppOrder";
 import { ProductGrid } from "../components/ProductCard";
 
 const ProductDetail = () => {
   const { slug } = useParams();
   const [data, setData] = useState(null);
+  const [error,setError]=useState("");
+  const [retry,setRetry]=useState(0);
   const [size, setSize] = useState("20ml");
   const [reviews, setReviews] = useState([]);
   const [reviewForm, setReviewForm] = useState({ name: "", rating: 5, title: "", comment: "" });
@@ -15,19 +18,20 @@ const ProductDetail = () => {
   const { inWish, toggleWish } = useWish();
 
   useEffect(() => {
-    http.get(`/products/${slug}`).then((r) => setData(r.data));
-    http.get(`/reviews/${slug}`).then((r) => setReviews(r.data.items));
-  }, [slug]);
-
-  if (!data) return <div className="max-w-7xl mx-auto px-6 py-20 text-center">Loading…</div>;
+    const controller=new AbortController();setData(null);setError("");
+    http.get(`/products/${slug}`,{signal:controller.signal}).then(r=>{setData(r.data);setSize(r.data.product.sizes[0]?.size);}).catch(e=>{if(e.code!=="ERR_CANCELED")setError(e.response?.status===404?"This fragrance is no longer available.":"Unable to load this fragrance.");});
+    http.get(`/reviews/${slug}`,{signal:controller.signal}).then(r=>setReviews(r.data.items)).catch(()=>setReviews([]));
+    return ()=>controller.abort();
+  }, [slug,retry]);
+  if(!data)return <div className="p-10 text-center" role="status">{error||"Loading fragrance…"}{error&&<><button className="btn-outline m-3" onClick={()=>setRetry(n=>n+1)}>Retry</button><Link to="/shop" className="underline">Browse fragrances</Link></>}</div>;
   const p = data.product;
   const sz = p.sizes.find((s) => s.size === size) || p.sizes[0];
 
   const submitReview = async (e) => {
     e.preventDefault();
-    const r = await http.post(`/reviews/${slug}`, reviewForm);
+    try { const r = await http.post(`/reviews/${slug}`, reviewForm);
     setReviews([r.data.review, ...reviews]);
-    setReviewForm({ name: "", rating: 5, title: "", comment: "" });
+    setReviewForm({ name: "", rating: 5, title: "", comment: "" }); } catch {setError("Unable to save your review. Please try again.");}
   };
 
   return (
@@ -62,7 +66,7 @@ const ProductDetail = () => {
 
           <div className="mt-6">
             <div className="text-[0.7rem] tracking-[0.2em] uppercase text-jlt-black/60 mb-2">Size</div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               {p.sizes.map((s) => (
                 <button key={s.size} onClick={() => setSize(s.size)} data-testid={`size-${s.size}`}
                   className={`chip ${size === s.size ? "chip-active" : ""}`}>
@@ -79,20 +83,20 @@ const ProductDetail = () => {
             <Link to="/checkout" onClick={() => addToCart(p, size)} className="btn-outline" data-testid="buy-now">Buy Now</Link>
             <button onClick={() => toggleWish(p)} className="btn-outline" data-testid="wishlist-btn"><Heart size={14} fill={inWish(p.slug) ? "currentColor" : "none"} /> {inWish(p.slug) ? "Wishlisted" : "Wishlist"}</button>
           </div>
-          <a href={waLink(`Hi! I'd like a recommendation similar to ${p.name} (Inspired by ${p.brand_inspiration}).`)} target="_blank" rel="noreferrer" className="mt-3 inline-flex items-center gap-2 text-sm text-[#25D366] hover:underline" data-testid="wa-recommend"><MessageCircle size={16}/> Ask for a recommendation on WhatsApp</a>
+          <WhatsAppOrder product={p} variant={sz} className="mt-3" data-testid="wa-order" />
 
           {/* What it smells like */}
           <div className="mt-8 border-t border-jlt-black/10 pt-6">
             <h3 className="text-[0.7rem] tracking-[0.3em] uppercase text-jlt-gold mb-2">What it smells like</h3>
-            <p className="text-sm text-jlt-black/80 leading-relaxed">{p.smells_like}</p>
+            <p className="text-sm text-jlt-black/80 leading-relaxed">{p.description || p.smells_like}</p>
           </div>
 
           {/* Notes pyramid */}
           <div className="mt-6 grid grid-cols-3 gap-4 border-t border-jlt-black/10 pt-6">
-            {[["Top", p.notes.top], ["Heart", p.notes.heart], ["Base", p.notes.base]].map(([t, arr]) => (
+            {[["Top", p.notes?.top || []], ["Heart", p.notes?.heart || []], ["Base", p.notes?.base || []]].map(([t, arr]) => (
               <div key={t}>
                 <div className="text-[0.65rem] tracking-[0.2em] uppercase text-jlt-gold">{t} Notes</div>
-                <div className="text-sm mt-2">{arr.join(", ")}</div>
+                <div className="text-sm mt-2">{(Array.isArray(arr) ? arr : [arr]).join(", ")}</div>
               </div>
             ))}
           </div>
@@ -123,6 +127,7 @@ const ProductDetail = () => {
         </div>
       </div>
 
+      {error && <p role="alert" className="text-red-700 mt-5">{error}</p>}
       {/* Reviews */}
       <section className="mt-16">
         <div className="flex items-end justify-between gap-4 flex-wrap">

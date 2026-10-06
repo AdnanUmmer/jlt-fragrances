@@ -117,6 +117,7 @@ body {
 }
 .bottle-card::before {
   content: ''; position: absolute; inset: 0;
+  pointer-events: none;
   background: radial-gradient(circle at 30% 20%, rgba(201,168,106,0.18), transparent 50%);
 }
 
@@ -176,6 +177,7 @@ body {
 .scroll-x::-webkit-scrollbar-thumb { background: var(--jlt-beige); border-radius: 3px; }
 
 .input-luxe {
+  min-width: 0;
   width: 100%; padding: 0.85rem 1rem;
   background: white; border: 1px solid rgba(14,12,10,0.18); border-radius: 4px;
   font-size: 0.95rem; outline: none;
