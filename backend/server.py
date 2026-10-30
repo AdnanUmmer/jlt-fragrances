@@ -25,6 +25,7 @@ from typing import List, Optional
 import bcrypt
 import jwt
 import razorpay
+from requests.exceptions import ConnectionError as PaymentConnectionError, Timeout as PaymentTimeout
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, UploadFile, File, Query
 from fastapi.responses import PlainTextResponse, Response
 from xml.sax.saxutils import escape as xml_escape
@@ -35,15 +36,37 @@ from openpyxl import load_workbook
 
 from seed_helpers import build_product, slugify, SIZES
 from discovery import normalized, matches, filter_options, key
+from quiz import inventory, matching, choices, STEPS
+from offers import COMBOS, DISCOVERY_SETS
+import copy
+from starlette.concurrency import run_in_threadpool
 
 mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ["DB_NAME"]]
 
-# Initialize Razorpay client
-razorpay_client = razorpay.Client(
-    auth=(os.environ.get("RAZORPAY_KEY_ID", ""), os.environ.get("RAZORPAY_KEY_SECRET", ""))
-)
+def payment_configuration_error():
+    key_id = os.environ.get("RAZORPAY_KEY_ID", "").strip()
+    secret = os.environ.get("RAZORPAY_KEY_SECRET", "").strip()
+    if not key_id or not secret:
+        return "missing RAZORPAY_KEY_ID or RAZORPAY_KEY_SECRET"
+    if not re.fullmatch(r"rzp_(test|live)_[A-Za-z0-9]+", key_id) or any(v in (key_id + secret).lower() for v in ("placeholder", "your_key", "xxxxx")):
+        return "invalid or placeholder credentials"
+    mode = os.environ.get("RAZORPAY_MODE", "").strip()
+    if mode and (mode not in {"test", "live"} or not key_id.startswith(f"rzp_{mode}_")):
+        return "RAZORPAY_MODE does not match the key ID"
+    return None
+
+
+def require_payment_configuration():
+    issue = payment_configuration_error()
+    if issue:
+        log.error("Payment configuration unavailable: %s; check backend environment and restart", issue)
+        raise HTTPException(503, "Online payment is temporarily unavailable. Please contact us or try again later.")
+
+
+razorpay_client = razorpay.Client(auth=(os.environ.get("RAZORPAY_KEY_ID", "").strip(), os.environ.get("RAZORPAY_KEY_SECRET", "").strip()))
+razorpay_client.set_app_details({"title": "JLT Fragrances", "version": "1"})
 
 app = FastAPI(title="JLT Fragrances API")
 api = APIRouter(prefix="/api")
@@ -107,11 +130,11 @@ class ContactRequest(BaseModel):
 
 
 class QuizRequest(BaseModel):
-    scent: str
-    occasion: str
-    projection: str
-    budget: int
-    gender: str
+    scent: Optional[str] = None
+    occasion: Optional[str] = None
+    projection: Optional[str] = None
+    budget: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
+    gender: Optional[str] = None
 
 
 class ReviewCreate(BaseModel):
@@ -156,6 +179,7 @@ class OrderItem(BaseModel):
     name: str = Field(default="", max_length=200)
     brand: str = Field(default="", max_length=200)
     size: str = Field(min_length=1, max_length=20)
+    selections: List[str] = Field(default_factory=list, max_length=10)
     price: int = 0
     qty: int = Field(ge=1, le=20)
 
@@ -367,6 +391,8 @@ def parse_import_workbook(raw: bytes, legacy_mapping: bool = False) -> dict:
             if explicit is not None and str(explicit).strip():
                 try: prices[size] = int(explicit)
                 except (TypeError, ValueError): errors.append(f"Invalid {size} price")
+                if size in prices and prices[size] <= 0:
+                    errors.append(f"Invalid {size} price: must be positive")
         if tier_key:
             prices = {size: prices.get(size, defaults[tier_key][size]) for size in ("20ml", "50ml", "100ml")}
         notes = {}
@@ -399,9 +425,9 @@ def verify_razorpay_signature(order_id: str, payment_id: str, signature: str) ->
     """Verify Razorpay payment signature."""
     try:
         message = f"{order_id}|{payment_id}"
-        secret = os.environ.get("RAZORPAY_KEY_SECRET", "").encode()
+        secret = os.environ.get("RAZORPAY_KEY_SECRET", "").strip().encode()
         computed_sig = hmac.new(secret, message.encode(), hashlib.sha256).hexdigest()
-        return computed_sig == signature
+        return bool(secret) and hmac.compare_digest(computed_sig, signature)
     except Exception as e:
         log.error(f"Signature verification error: {e}")
         return False
@@ -624,21 +650,35 @@ async def list_brands():
     return {"groups": [{"letter": k, "brands": v} for k, v in sorted(grouped.items())], "total": len(items)}
 
 
+async def offer_catalogue():
+    combos, sets = copy.deepcopy(COMBOS), copy.deepcopy(DISCOVERY_SETS)
+    saved = await db.settings.find_one({"key": "offer_prices"}, {"_id": 0}) or {}
+    for offer in [*combos["tester_combos"], *combos["special_offers"], *sets]:
+        price = saved.get("prices", {}).get(offer["slug"])
+        if type(price) is int and price > 0:
+            offer["price"] = price
+    return combos, sets
+
+
 @api.get("/combos")
 async def list_combos():
-    return {
-        "tester_combos": [
-            {"slug": "tester-3-8ml", "title": "Tester Combo – 3 Fragrances", "subtitle": "3 × 8ml", "price": 549, "description": "Pick any 3 fragrances at 8ml each. Perfect first-time sampler.", "items": 3, "size": "8ml"},
-            {"slug": "tester-5-8ml", "title": "Tester Combo – 5 Fragrances", "subtitle": "5 × 8ml", "price": 899, "description": "Pick any 5 fragrances at 8ml. Our most popular sampler.", "items": 5, "size": "8ml", "tag": "Most Popular"},
-            {"slug": "tester-10-8ml", "title": "Tester Combo – 10 Fragrances", "subtitle": "10 × 8ml", "price": 1699, "description": "Pick any 10 fragrances at 8ml. The ultimate explorer set.", "items": 10, "size": "8ml", "tag": "Best Value"},
-        ],
-        "special_offers": [
-            {"slug": "special-5-20ml", "title": "5 × 20ml Bundle", "subtitle": "Pick 5 at 20ml each", "price": 1999, "description": "Pick any 5 full 20ml bottles at a special bundle price.", "items": 5, "size": "20ml"},
-            {"slug": "special-4-30ml", "title": "4 × 30ml Bundle", "subtitle": "Pick 4 at 30ml each", "price": 2499, "description": "Pick any 4 fragrances at 30ml. Great gifting bundle.", "items": 4, "size": "30ml"},
-            {"slug": "special-3-50ml", "title": "3 × 50ml Bundle", "subtitle": "Pick 3 at 50ml each", "price": 2999, "description": "Pick any 3 fragrances at 50ml. Premium signature bundle.", "items": 3, "size": "50ml", "tag": "Bestseller"},
-            {"slug": "special-2-100ml", "title": "2 × 100ml Bundle", "subtitle": "Pick 2 at 100ml each", "price": 2999, "description": "Pick any 2 fragrances at 100ml. Maximum value, full-size bottles.", "items": 2, "size": "100ml", "tag": "Top Value"},
-        ],
-    }
+    return (await offer_catalogue())[0]
+
+
+@api.get("/admin/offer-prices")
+async def get_offer_prices(admin: dict = Depends(get_current_admin)):
+    combos, sets = await offer_catalogue()
+    return {"items": [*combos["tester_combos"], *combos["special_offers"], *sets]}
+
+
+@api.put("/admin/offer-prices")
+async def save_offer_prices(body: dict, admin: dict = Depends(get_current_admin)):
+    allowed = {o["slug"] for o in [*COMBOS["tester_combos"], *COMBOS["special_offers"], *DISCOVERY_SETS]}
+    prices = body.get("prices")
+    if not isinstance(prices, dict) or set(prices) != allowed or any(type(v) is not int or not 0 < v <= 1_000_000 for v in prices.values()):
+        raise HTTPException(422, "Provide a positive whole-rupee price for every current offer (maximum ₹1,000,000).")
+    await db.settings.update_one({"key": "offer_prices"}, {"$set": {"prices": prices}}, upsert=True)
+    return await get_offer_prices(admin)
 
 
 @api.get("/products/bestsellers")
@@ -667,33 +707,35 @@ async def get_product(slug: str):
     return {"product": p, "related": related}
 
 
+async def quiz_inventory():
+    return inventory(await db.products.find({"is_active": {"$ne": False}, "in_stock": {"$ne": False}}, {"_id": 0}).to_list(None))
+
+
+@api.post("/quiz/options")
+async def quiz_options(body: QuizRequest):
+    answers = body.model_dump(exclude_none=True)
+    prefix = {}
+    for step in STEPS:
+        if step not in answers:
+            remaining = matching(await quiz_inventory(), prefix)
+            return {"step": step, "options": choices(remaining, step), "total": len(remaining)}
+        prefix[step] = answers[step]
+    raise HTTPException(422, "All questions are answered; request recommendations.")
+
+
 @api.post("/quiz/recommend")
 async def quiz_recommend(body: QuizRequest):
-    query = {"is_active": {"$ne": False}, "moods": body.scent, "projection": body.projection}
-    if body.gender in {"Men", "Women", "Unisex"}:
-        query["$or"] = [{"gender": body.gender}, {"gender": "Unisex"}]
-    occ_map = {
-        "Daily": "Daily Wear", "Office": "Office", "Date Night": "Date Night",
-        "Wedding": "Wedding", "Gifting": "Gifting", "Festive": "Festive Wear",
-    }
-    if body.occasion in occ_map:
-        query["occasions"] = occ_map[body.occasion]
-    items = await db.products.find(query, {"_id": 0}).sort([("rating", -1), ("is_bestseller", -1)]).limit(5).to_list(5)
-    if len(items) < 3:
-        items = await db.products.find({"is_active": {"$ne": False}, "moods": body.scent}, {"_id": 0}).sort([("rating", -1)]).limit(5).to_list(5)
-    return {"items": items[:5]}
+    answers = body.model_dump(exclude_none=True)
+    if set(answers) != set(STEPS):
+        raise HTTPException(422, "Complete all five quiz questions.")
+    items = matching(await quiz_inventory(), answers)
+    items.sort(key=lambda p: (-(p.get("rating") or 0), not p.get("is_bestseller")))
+    return {"items": items[:12], "total": len(items)}
 
 
 @api.get("/discovery-sets")
 async def discovery_sets():
-    sets = [
-        {"slug": "5-scent-discovery", "title": "The 5-Scent Discovery Set", "subtitle": "5 x 8ml samples", "price": 849, "description": "A curated mix of five bestselling premium-inspired fragrances. The perfect way to explore before committing.", "tag": "Bestseller"},
-        {"slug": "oud-discovery", "title": "Oud Discovery Set", "subtitle": "5 x 8ml samples", "price": 899, "description": "Deep, smoky, and unforgettable. Five of our richest oud-inspired compositions for evenings and special occasions.", "tag": "Rich & Bold"},
-        {"slug": "office-wear-discovery", "title": "Office Wear Discovery Set", "subtitle": "5 x 8ml samples", "price": 849, "description": "Clean, fresh, professional. Five subtle scents that work hard for daily wear and the workplace.", "tag": "Everyday"},
-        {"slug": "date-night-discovery", "title": "Date Night Discovery Set", "subtitle": "5 x 8ml samples", "price": 849, "description": "Seductive, warm and memorable. Five intimate compositions for unforgettable evenings.", "tag": "Seductive"},
-        {"slug": "wedding-festive-discovery", "title": "Wedding & Festive Discovery Set", "subtitle": "5 x 8ml samples", "price": 899, "description": "Bold, rich, festive. Five oud-and-amber compositions crafted for celebrations and milestone moments.", "tag": "Festive"},
-    ]
-    return {"items": sets}
+    return {"items": (await offer_catalogue())[1]}
 
 
 @api.post("/contact")
@@ -847,7 +889,7 @@ class SeoEntry(BaseModel):
 
 SITE_NAME = "JLT Fragrances"
 STATIC_SEO = {
-    "/": ("JLT Fragrances – Premium Inspired Perfumes Online India", "Shop 750+ premium-inspired perfumes in 20ml, 50ml and 100ml. Designer, Arab and niche inspired scents with pan-India delivery."),
+    "/": ("JLT Fragrances – Premium Inspired Perfumes Online India", "Shop 800+ Luxury Inspired Scents in 20ml, 50ml and 100ml. Designer, Arab and niche inspired scents with pan-India delivery."),
     "/shop": ("Shop Perfumes – Designer, Arab & Niche Inspired", "Browse and filter the full JLT Fragrances catalogue by brand, notes, occasion and size."),
     "/brands": ("Fragrances by Brand Inspiration", "Explore perfumes inspired by your favourite fragrance houses."),
     "/bestsellers": ("Bestselling Perfumes", "Our most loved premium-inspired fragrances."),
@@ -895,6 +937,8 @@ async def build_seo(path: str) -> dict:
         seo.update({k: v for k, v in override.items() if k in seo and v not in ("", None)})
         seo["noindex"] = bool(override.get("noindex", seo["noindex"]))
     seo["site_name"] = SITE_NAME
+    for field in ("title", "description", "og_title", "og_description"):
+        seo[field] = re.sub(r"750\s*\+\s*premium[\s-]*inspired\s*(?:scents|perfumes)", "800+ Luxury Inspired Scents", seo[field], flags=re.I)
     seo["title"] = seo["title"] if SITE_NAME in seo["title"] else (f"{seo['title']} | {SITE_NAME}" if seo["title"] else SITE_NAME)
     return seo
 
@@ -1007,27 +1051,62 @@ async def list_contacts(admin: dict = Depends(get_current_admin)):
 
 # ============ RAZORPAY & ORDER ENDPOINTS ============
 
+async def price_cart(items):
+    combos, sets = await offer_catalogue()
+    offers = {o["slug"]: o for o in [*combos["tester_combos"], *combos["special_offers"], *sets]}
+    authoritative_items = []
+    subtotal_amount = 0
+    for item in items:
+        if item.slug == "special-4-30ml":
+            raise HTTPException(400, "The 30ml bundle is no longer available. Remove it from your cart.")
+        offer = offers.get(item.slug)
+        if offer:
+            if item.size != offer["size"]:
+                raise HTTPException(400, "Invalid offer size")
+            selected = []
+            if item.selections or not offer.get("curated"):
+                if len(item.selections) != offer["items"]:
+                    raise HTTPException(400, f"Choose {offer['items']} fragrances for {offer['title']}")
+                for slug in item.selections:
+                    product = await db.products.find_one({"slug": slug, "is_active": {"$ne": False}, "in_stock": {"$ne": False}})
+                    if not product or (item.size != "8ml" and not any(v.get("size") == item.size and v.get("in_stock") is not False for v in product.get("sizes", []))):
+                        raise HTTPException(400, "A selected fragrance is unavailable. Please choose again.")
+                    selected.append({"slug": slug, "name": product["name"], "brand": product["brand_inspiration"]})
+            line = {"slug": item.slug, "name": offer["title"], "brand": "JLT Fragrances", "size": offer["size"], "price": offer["price"], "qty": item.qty,
+                    "selections": item.selections, "selected_products": selected}
+        else:
+            product = await db.products.find_one({"slug": item.slug, "is_active": {"$ne": False}})
+            if not product:
+                raise HTTPException(400, f"Product {item.slug} not found")
+            variant = next((v for v in product.get("sizes", []) if v.get("size") == item.size and v.get("in_stock") is not False), None)
+            if not variant or not isinstance(variant.get("price"), (int, float)) or variant["price"] <= 0:
+                raise HTTPException(400, f"Size {item.size} is not available for {item.slug}")
+            if product.get("in_stock") is False:
+                raise HTTPException(400, f"{product['name']} is currently out of stock")
+            line = {"slug": item.slug, "name": product["name"], "brand": product["brand_inspiration"], "size": item.size, "price": int(variant["price"]), "qty": item.qty}
+        subtotal_amount += line["price"] * line["qty"] * 100
+        authoritative_items.append(line)
+    shipping_amount = calculate_shipping(subtotal_amount // 100, await get_shipping_settings()) * 100
+    return {"items": authoritative_items, "subtotal_amount": subtotal_amount, "shipping_amount": shipping_amount, "total_amount": subtotal_amount + shipping_amount}
+
+
+class CartQuoteRequest(BaseModel):
+    items: List[OrderItem] = Field(min_length=1, max_length=50)
+
+
+@api.post("/cart/quote")
+async def quote_cart(body: CartQuoteRequest):
+    return await price_cart(body.items)
+
+
 @api.post("/orders")
 async def create_order(body: CreateOrderRequest):
     """Create order and Razorpay payment."""
     try:
-        authoritative_items = []
-        subtotal_amount = 0
-        for item in body.items:
-            product = await db.products.find_one({"slug": item.slug, "is_active": {"$ne": False}})
-            if not product:
-                raise HTTPException(status_code=400, detail=f"Product {item.slug} not found")
-            variant = next((v for v in product.get("sizes", []) if v.get("size") == item.size), None)
-            if not variant:
-                raise HTTPException(status_code=400, detail=f"Size {item.size} is not available for {item.slug}")
-            if product.get("in_stock") is False:
-                raise HTTPException(status_code=400, detail=f"{product['name']} is currently out of stock")
-            line_total = int(variant["price"]) * item.qty * 100
-            subtotal_amount += line_total
-            authoritative_items.append({"slug": item.slug, "name": product["name"], "brand": product["brand_inspiration"], "size": item.size, "price": int(variant["price"]), "qty": item.qty})
-        shipping_settings = await get_shipping_settings()
-        shipping_amount = calculate_shipping(subtotal_amount // 100, shipping_settings) * 100
-        total_amount = subtotal_amount + shipping_amount
+        require_payment_configuration()
+        quote = await price_cart(body.items)
+        authoritative_items = quote["items"]
+        subtotal_amount, shipping_amount, total_amount = (quote[k] for k in ("subtotal_amount", "shipping_amount", "total_amount"))
 
         # A retry with the same request_id and an identical cart reuses the existing order instead of creating another.
         if body.request_id:
@@ -1046,8 +1125,8 @@ async def create_order(body: CreateOrderRequest):
         order_id = f"ORD-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{str(uuid.uuid4())[:8].upper()}"
         
         # Create Razorpay order (amount in paise)
-        razorpay_order = razorpay_client.order.create(
-            data={"amount": total_amount, "currency": "INR", "receipt": order_id}
+        razorpay_order = await run_in_threadpool(razorpay_client.order.create,
+            data={"amount": total_amount, "currency": "INR", "receipt": order_id}, timeout=20
         )
         
         # Store order in MongoDB (status: pending until payment verified)
@@ -1096,14 +1175,21 @@ async def create_order(body: CreateOrderRequest):
         }
     except HTTPException:
         raise
+    except (PaymentConnectionError, PaymentTimeout) as exc:
+        log.error("Payment provider connection failed (%s); check backend network/proxy settings", type(exc).__name__)
+        raise HTTPException(503, "Unable to connect to the payment provider. Please try again shortly. No payment has been taken.")
+    except (razorpay.errors.BadRequestError, razorpay.errors.ServerError, razorpay.errors.GatewayError):
+        log.error("Razorpay rejected order creation; verify matching key pair, account and mode")
+        raise HTTPException(503, "Payment provider is unavailable. Please contact us or try again later.")
     except Exception as e:
-        log.error(f"Order creation error: {e}")
+        log.error("Order creation failed (%s)", type(e).__name__)
         raise HTTPException(status_code=500, detail="Failed to create order")
 
 
 @api.post("/orders/verify-payment")
 async def verify_payment(body: PaymentVerifyRequest):
     """Verify Razorpay payment and mark order as paid."""
+    require_payment_configuration()
     try:
         log.info("Payment verification request received", extra={
             "razorpay_order_id": body.razorpay_order_id,
@@ -1128,13 +1214,13 @@ async def verify_payment(body: PaymentVerifyRequest):
         
         # Verify payment with Razorpay API
         try:
-            payment = razorpay_client.payment.fetch(body.razorpay_payment_id)
+            payment = await run_in_threadpool(razorpay_client.payment.fetch, body.razorpay_payment_id, timeout=20)
             log.info("Razorpay payment fetched", extra={
                 "razorpay_payment_id": body.razorpay_payment_id,
                 "amount": payment.get("amount"),
                 "status": payment.get("status"),
             })
-            if payment.get("order_id") != body.razorpay_order_id or payment.get("amount") != order.get("total_amount"):
+            if payment.get("order_id") != body.razorpay_order_id or payment.get("amount") != order.get("total_amount") or payment.get("currency") != "INR":
                 log.warning("Payment %s does not match order %s", body.razorpay_payment_id, body.razorpay_order_id)
                 raise HTTPException(status_code=400, detail="Payment does not match this order")
             if payment.get("status") != "captured":
@@ -1143,7 +1229,7 @@ async def verify_payment(body: PaymentVerifyRequest):
         except HTTPException:
             raise
         except Exception as e:
-            log.error("Razorpay verification error for payment %s: %s", body.razorpay_payment_id, e)
+            log.error("Razorpay verification failed (%s)", type(e).__name__)
             raise HTTPException(status_code=500, detail="Payment verification failed")
         
         # Atomic transition so concurrent/repeated verifications confirm and notify only once
@@ -1202,7 +1288,7 @@ async def verify_payment(body: PaymentVerifyRequest):
     except HTTPException:
         raise
     except Exception as e:
-        log.error(f"Payment verification error: {e}")
+        log.error("Payment verification failed (%s)", type(e).__name__)
         raise HTTPException(status_code=500, detail="Payment verification failed")
 
 
@@ -1238,6 +1324,8 @@ log = logging.getLogger("jlt")
 
 @app.on_event("startup")
 async def startup():
+    if payment_configuration_error():
+        log.warning("Online payments disabled: %s", payment_configuration_error())
     await db.products.create_index("slug", unique=True)
     await db.products.create_index("brand_inspiration")
     await db.products.create_index("scent_family")
@@ -1262,9 +1350,6 @@ async def startup():
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
         log.info("Seeded admin user: %s", admin_email)
-    elif not verify_password(admin_password, existing["password_hash"]):
-        await db.users.update_one({"email": admin_email}, {"$set": {"password_hash": hash_password(admin_password)}})
-
     if os.environ.get("APP_ENV", "development") != "production" and os.environ.get("ENABLE_DEV_ADMIN") == "true":
         dev_username = os.environ["DEV_ADMIN_USERNAME"].strip().lower()
         dev_password = os.environ["DEV_ADMIN_PASSWORD"]
@@ -1274,23 +1359,6 @@ async def startup():
         if not dev_user or not verify_password(dev_password,dev_user["password_hash"]):
             updates["password_hash"] = hash_password(dev_password)
         await db.users.update_one({"email":dev_email},{"$set":updates},upsert=True)
-
-    count = await db.products.count_documents({})
-    if count == 0:
-        raw_path = ROOT_DIR / "products_raw.json"
-        if raw_path.exists():
-            raw = json.loads(raw_path.read_text())
-            docs = [build_product(p["sl"], p["brand"], p["name"]) for p in raw]
-            seen = set()
-            unique = []
-            for d in docs:
-                if d["slug"] not in seen:
-                    seen.add(d["slug"])
-                    unique.append(d)
-            if unique:
-                await db.products.insert_many(unique)
-                log.info("Seeded %d products", len(unique))
-
 
 @app.on_event("shutdown")
 async def shutdown():

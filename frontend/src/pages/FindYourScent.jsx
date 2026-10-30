@@ -1,14 +1,14 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import http from "../lib/api";
 import { ProductGrid } from "../components/ProductCard";
 
 const steps = [
-  { key: "scent", title: "What kind of scent do you love?", options: ["Fresh","Sweet","Oud","Floral","Musky","Spicy","Clean"] },
-  { key: "occasion", title: "When will you wear it?", options: ["Daily","Office","Date Night","Wedding","Gifting","Festive"] },
-  { key: "projection", title: "How strong should it project?", options: ["Soft","Moderate","Strong"] },
-  { key: "budget", title: "What's your budget?", options: [["Under ₹500", 500],["Under ₹800", 800],["Under ₹1300", 1300]] },
-  { key: "gender", title: "Who's it for?", options: ["Men","Women","Unisex"] },
+  { key: "scent", title: "What kind of scent do you love?" },
+  { key: "occasion", title: "When will you wear it?" },
+  { key: "projection", title: "How strong should it project?" },
+  { key: "budget", title: "What's your budget?" },
+  { key: "gender", title: "Who's it for?" },
 ];
 
 const FindYourScent = () => {
@@ -16,20 +16,32 @@ const FindYourScent = () => {
   const [answers, setAnswers] = useState({});
   const [results, setResults] = useState(null);
 
-  const submit = async (final) => {
-    const r = await http.post("/quiz/recommend", final);
-    setResults(r.data.items);
-  };
+  const [options, setOptions] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoading(true); setError(""); setOptions([]);
+    const complete = steps.every(({ key }) => answers[key] !== undefined);
+    http.post(complete ? "/quiz/recommend" : "/quiz/options", answers, { signal: controller.signal })
+      .then(({ data }) => complete ? setResults(data.items) : setOptions(data.options))
+      .catch((e) => { if (e.code !== "ERR_CANCELED") setError("We couldn't load your matches. Please try again."); })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, [answers, retry]);
 
-  const pick = (val) => {
-    const cur = steps[step];
-    const v = Array.isArray(val) ? val[1] : val;
-    const next = { ...answers, [cur.key]: v };
-    setAnswers(next);
-    if (step === steps.length - 1) submit(next);
-    else setStep(step + 1);
+  const pick = (value) => {
+    if (loading) return;
+    setLoading(true);
+    setAnswers({ ...answers, [steps[step].key]: value });
+    if (step < steps.length - 1) setStep(step + 1);
   };
-
+  const back = () => {
+    const previous = step - 1;
+    setAnswers(Object.fromEntries(steps.slice(0, previous).map(({ key }) => [key, answers[key]])));
+    setStep(previous);
+  };
   const reset = () => { setStep(0); setAnswers({}); setResults(null); };
 
   if (results) {
@@ -43,7 +55,7 @@ const FindYourScent = () => {
         </div>
         <div className="mt-10">
           {results.length === 0 ? (
-            <div className="text-center text-jlt-black/60">No exact matches — <Link className="text-jlt-gold" to="/shop">browse all</Link>.</div>
+            <div className="text-center text-jlt-black/60">Inventory has changed or no fragrances are available. Please retake the quiz or <Link className="text-jlt-gold" to="/shop">browse all</Link>.</div>
           ) : <ProductGrid items={results} />}
         </div>
       </div>
@@ -60,18 +72,21 @@ const FindYourScent = () => {
           <div className="bg-jlt-gold h-1 transition-all" style={{ width: `${((step + 1) / steps.length) * 100}%` }} />
         </div>
       </div>
+      {loading && <p role="status" className="text-center py-6">Finding available matches…</p>}
+      {error && <div role="alert" className="text-center">{error} <button className="btn-outline" onClick={() => setRetry(retry + 1)}>Retry</button></div>}
+      {!loading && !error && options.length === 0 && <p className="text-center">No fragrances are currently available for these answers. <button className="underline" onClick={reset}>Start again</button></p>}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-        {cur.options.map((o, i) => {
-          const label = Array.isArray(o) ? o[0] : o;
+        {options.map((o, i) => {
+          const label = o.label;
           return (
-            <button key={i} onClick={() => pick(o)} data-testid={`quiz-option-${label}`}
+            <button key={i} disabled={loading} onClick={() => pick(o.value)} data-testid={`quiz-option-${label}`}
               className="bg-white border border-jlt-black/15 hover:border-jlt-gold p-5 text-center transition">
-              <div className="font-display text-lg">{label}</div>
+              <div className="font-display text-lg">{label}</div><div className="text-xs mt-2 text-jlt-black/60">{o.count} matches</div>
             </button>
           );
         })}
       </div>
-      {step > 0 && <button onClick={() => setStep(step - 1)} className="mt-8 text-xs tracking-[0.2em] uppercase text-jlt-black/60" data-testid="quiz-back">← Back</button>}
+      {step > 0 && <button onClick={back} className="mt-8 text-xs tracking-[0.2em] uppercase text-jlt-black/60" data-testid="quiz-back">← Back</button>}
     </div>
   );
 };

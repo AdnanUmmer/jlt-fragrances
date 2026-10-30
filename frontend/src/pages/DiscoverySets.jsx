@@ -1,8 +1,23 @@
 import React, { useEffect, useState } from "react";
+import { useCart } from "../lib/store";
 import http, { waLink } from "../lib/api";
+import FragrancePicker from "../components/FragrancePicker";
 import { MessageCircle, Sparkles } from "lucide-react";
 
-const SetCard = ({ s, dark = true }) => {
+const SetCard = ({ s, dark = true, products }) => {
+  const { addToCart } = useCart();
+  const [selecting, setSelecting] = useState(false);
+  const [selected, setSelected] = useState([]);
+  const [message, setMessage] = useState("");
+  const available = products.filter(p => p.in_stock !== false && p.is_active !== false && (s.size === "8ml" || (p.sizes || []).some(v => v.size === s.size && v.in_stock !== false)));
+  const complete = Array.from({ length: s.items }, (_, index) => selected[index]).every(slug => available.some(p => p.slug === slug));
+  const add = () => {
+    if (!selecting) { setMessage(""); setSelecting(true); return; }
+    if (!complete) return;
+    addToCart({ slug: s.slug, name: s.title, brand_inspiration: "JLT Fragrances", sizes: [{ size: s.size, price: s.price }],
+      selections: selected, selected_products: selected.map(slug => { const p = available.find(p => p.slug === slug); return { slug, name: p.name, brand: p.brand_inspiration }; }) }, s.size);
+    setMessage("Added to cart"); setSelecting(false); setSelected([]);
+  };
   // Separate button themes for dark and light cards.
   const whatsappButtonClass = dark
     ? `
@@ -76,8 +91,19 @@ const SetCard = ({ s, dark = true }) => {
           ₹{s.price}
         </div>
 
+        {selecting && <div className="space-y-4">
+          <p className="text-xs opacity-70" role="status">{selected.filter(slug => available.some(p => p.slug === slug)).length} of {s.items} fragrances selected · {s.size} each</p>
+          {Array.from({ length: s.items }, (_, index) => <FragrancePicker key={index} label={`Fragrance ${index + 1}`} dark={dark} products={available} value={selected[index] || ""}
+            onChange={slug => setSelected(prev => { const next = [...prev]; next[index] = slug; return next; })} />)}
+          {!available.length && <p role="status" className="text-sm">No fragrances are available for this size right now.</p>}
+          <button type="button" className="text-xs underline underline-offset-4 opacity-70 hover:opacity-100" onClick={() => setSelecting(false)}>Cancel selection</button>
+        </div>}
+        <button className={`${whatsappButtonClass} disabled:opacity-40 disabled:cursor-not-allowed`} onClick={add} disabled={selecting && !complete}>
+          {selecting ? "Add to cart" : "Choose fragrances"}
+        </button>
+        {message && <p role="status" className="text-sm">{message}</p>}
         <a
-          href={waLink(`Hi! I'd like to order the ${s.title}.`)}
+          href={waLink(`Hi! I'd like to order the ${s.title}.${selected.filter(Boolean).length ? " My fragrance choices: " + selected.filter(Boolean).map(slug => { const p = available.find(p => p.slug === slug); return p ? `${p.brand_inspiration} — ${p.name}` : slug; }).join(", ") : ""}`)}
           target="_blank"
           rel="noreferrer"
           className={whatsappButtonClass}
@@ -93,6 +119,7 @@ const SetCard = ({ s, dark = true }) => {
 
 const DiscoverySets = () => {
   const [sets, setSets] = useState([]);
+  const [products, setProducts] = useState([]);
 
   const [combos, setCombos] = useState({
     tester_combos: [],
@@ -109,7 +136,13 @@ const DiscoverySets = () => {
     setLoading(true);
     setError("");
 
+    const catalogue = async () => {
+      const first = await http.get("/products", { params: { limit: 120, page: 1 }, signal: controller.signal });
+      const pages = await Promise.all(Array.from({ length: Math.max(0, Math.ceil(first.data.total / 120) - 1) }, (_, n) => http.get("/products", { params: { limit: 120, page: n + 2 }, signal: controller.signal })));
+      return [...first.data.items, ...pages.flatMap(r => r.data.items)];
+    };
     Promise.all([
+      catalogue(),
       http.get("/discovery-sets", {
         signal: controller.signal,
       }),
@@ -117,7 +150,8 @@ const DiscoverySets = () => {
         signal: controller.signal,
       }),
     ])
-      .then(([setsResponse, combosResponse]) => {
+      .then(([catalogueItems, setsResponse, combosResponse]) => {
+        setProducts(catalogueItems);
         setSets(setsResponse.data.items);
         setCombos(combosResponse.data);
       })
@@ -136,6 +170,13 @@ const DiscoverySets = () => {
 
     return () => controller.abort();
   }, [retry]);
+
+  useEffect(() => {
+    const refresh = () => Promise.all([http.get("/discovery-sets"), http.get("/combos")]).then(([a, b]) => { setSets(a.data.items); setCombos(b.data); }).catch(() => {});
+    window.addEventListener("focus", refresh);
+    const timer = setInterval(refresh, 15000);
+    return () => { window.removeEventListener("focus", refresh); clearInterval(timer); };
+  }, []);
 
   if (loading || error) {
     return (
@@ -226,6 +267,7 @@ const DiscoverySets = () => {
             <SetCard
               key={s.slug}
               s={s}
+              products={products}
               dark={true}
             />
           ))}
@@ -254,11 +296,12 @@ const DiscoverySets = () => {
             </p>
           </div>
 
-          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-5 items-stretch">
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5 items-stretch">
             {combos.special_offers.map((s) => (
               <SetCard
                 key={s.slug}
                 s={s}
+                products={products}
                 dark={false}
               />
             ))}
@@ -283,6 +326,7 @@ const DiscoverySets = () => {
             <SetCard
               key={s.slug}
               s={s}
+              products={products}
               dark={true}
             />
           ))}

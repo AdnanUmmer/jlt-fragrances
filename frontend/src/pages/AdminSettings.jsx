@@ -77,3 +77,29 @@ export const SeoManagerPanel = () => {
     </section>
   );
 };
+
+export const OfferPricesPanel = () => {
+  const [items, setItems] = useState([]);
+  const [msg, setMsg] = useState("");
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { http.get("/admin/offer-prices").then(r => setItems(r.data.items)).catch(() => setMsg("Unable to load offer prices. Reload to retry.")); }, []);
+  const save = async e => {
+    e.preventDefault(); setSaving(true); setMsg("");
+    try {
+      const prices = Object.fromEntries(items.map(i => [i.slug, Number(i.price)]));
+      const r = await http.put("/admin/offer-prices", { prices });
+      setItems(r.data.items); setMsg("Prices saved. Storefront and checkout use these prices immediately.");
+    } catch (err) { setMsg(errText(err, "Unable to save prices.")); }
+    finally { setSaving(false); }
+  };
+  return <section className="bg-white border border-jlt-black/10 p-5 mb-6" data-testid="admin-offer-prices">
+    <h2 className="font-display text-2xl">Bundles & Discovery Sets</h2>
+    <form onSubmit={save} className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3 mt-4">
+      {items.map((item, index) => <label key={item.slug} className="text-xs">{item.title} (₹)
+        <input className="input-luxe" type="number" required min="1" max="1000000" step="1" value={item.price}
+          onChange={e => setItems(items.map((v, n) => n === index ? { ...v, price: e.target.value } : v))} />
+      </label>)}
+      <button disabled={saving || !items.length} className="btn-primary w-fit">{saving ? "Saving…" : "Save offer prices"}</button>
+    </form>{msg && <p role="status" className="text-sm mt-3">{msg}</p>}
+  </section>;
+};

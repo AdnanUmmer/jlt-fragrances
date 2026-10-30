@@ -5,7 +5,7 @@ import http, { waLink, INSTAGRAM_URL } from "../lib/api";
 import { ProductGrid } from "../components/ProductCard";
 
 const trustItems = [
-  ["750+ Inspired Scents", Sparkles],
+  ["800+ Luxury Inspired Scents", Sparkles],
   ["Starting ₹449", CreditCard],
   ["Premium Oils", Sparkles],
   ["Pan India Delivery", Truck],
@@ -42,7 +42,7 @@ const Home = () => {
               Smell Premium.<br /><span className="shimmer-text">Spend Smart.</span>
             </h1>
             <p className="mt-6 text-base sm:text-lg text-jlt-black/75 max-w-xl">
-              Explore 750+ luxury-inspired fragrances crafted with premium oils, starting at ₹449.
+              Explore 800+ Luxury Inspired Scents crafted with premium oils, starting at ₹449.
             </p>
             <div className="mt-9 flex flex-wrap gap-3">
               <Link to="/bestsellers" className="btn-primary" data-testid="hero-shop-bestsellers">Shop Bestsellers <ArrowRight size={14} /></Link>
@@ -195,9 +195,9 @@ const Home = () => {
         <div className="max-w-3xl mx-auto px-6 text-center">
           <h2 className="font-display text-4xl sm:text-5xl">Not sure what to choose?</h2>
           <p className="mt-4 text-jlt-ivory/70">Take the scent quiz or message us on WhatsApp — we'll guide you to your perfect fragrance.</p>
-          <div className="mt-8 flex flex-wrap gap-3 justify-center">
-            <Link to="/find-your-scent" className="btn-primary !bg-jlt-gold !border-jlt-gold hover:!bg-jlt-ivory hover:!text-jlt-black">Take The Quiz</Link>
-            <a href={waLink()} target="_blank" rel="noreferrer" className="btn-outline !text-jlt-ivory !border-jlt-ivory hover:!bg-jlt-ivory hover:!text-jlt-black">Message on WhatsApp</a>
+          <div className="mt-8 flex flex-col sm:flex-row gap-3 justify-center">
+            <Link to="/find-your-scent" className="btn-primary final-cta-quiz">Take The Quiz</Link>
+            <a href={waLink()} target="_blank" rel="noreferrer" className="btn-outline final-cta-whatsapp">Message on WhatsApp</a>
           </div>
         </div>
       </section>

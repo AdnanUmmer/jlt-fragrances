@@ -10,7 +10,7 @@ export const About = () => (
       <div className="divider-gold" />
     </div>
     <div className="mt-8 space-y-5 text-jlt-black/80 leading-relaxed">
-      <p>JLT Fragrances was born from a simple belief — premium-quality scent should not be a luxury that's out of reach. We craft 750+ luxury-inspired fragrances using premium oils, faithful to the spirit of the designer and niche compositions that inspire us, while staying honest about what we are.</p>
+      <p>JLT Fragrances was born from a simple belief — premium-quality scent should not be a luxury that's out of reach. We craft 800+ Luxury Inspired Scents using premium oils, faithful to the spirit of the designer and niche compositions that inspire us, while staying honest about what we are.</p>
       <p>Every fragrance is hand-tested for projection, longevity, and that elusive "wow" factor. Starting at ₹499, we deliver Pan India and back every bottle with WhatsApp support and a real human team behind it.</p>
       <p>Our collection lives under two banners: <span className="font-medium">Just Like That</span> — the inspired collection — and <span className="font-medium">Just Love That</span> — our original house line, currently in development.</p>
     </div>

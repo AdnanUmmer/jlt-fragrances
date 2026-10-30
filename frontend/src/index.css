@@ -105,6 +105,29 @@ body {
 }
 .btn-outline:hover { background: var(--jlt-black); color: var(--jlt-ivory); }
 
+/* Explicit dark-section variants keep both calls to action legible. */
+.btn-primary.final-cta-quiz {
+  background: var(--jlt-gold);
+  border-color: var(--jlt-gold);
+  color: var(--jlt-black);
+}
+.btn-outline.final-cta-whatsapp {
+  background: var(--jlt-ivory);
+  border-color: var(--jlt-ivory);
+  color: var(--jlt-black);
+}
+.btn-primary.final-cta-quiz:hover,
+.btn-outline.final-cta-whatsapp:hover {
+  background: var(--jlt-bone);
+  border-color: var(--jlt-bone);
+  color: var(--jlt-black);
+}
+.final-cta-quiz:focus-visible,
+.final-cta-whatsapp:focus-visible {
+  outline: 2px solid var(--jlt-ivory);
+  outline-offset: 4px;
+}
+
 .divider-gold {
   width: 60px; height: 1px; background: var(--jlt-gold); margin: 0.75rem auto;
 }

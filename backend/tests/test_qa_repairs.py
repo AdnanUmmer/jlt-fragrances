@@ -15,7 +15,7 @@ sys.path.insert(0,str(ROOT/'backend'))
 DB='jlt_qa_test_'+uuid.uuid4().hex
 os.environ.update(MONGO_URL='mongodb://127.0.0.1:27017',DB_NAME=DB,ADMIN_EMAIL='qa@example.com',ADMIN_PASSWORD='test-only-password',
     JWT_SECRET='qa-test-signing-key-with-at-least-32-characters',APP_ENV='development',ENABLE_DEV_ADMIN='true',
-    DEV_ADMIN_USERNAME='admin',DEV_ADMIN_PASSWORD='admin',DEV_ADMIN_EMAIL='qa-dev@example.com',RAZORPAY_KEY_ID='test',RAZORPAY_KEY_SECRET='test')
+    DEV_ADMIN_USERNAME='admin',DEV_ADMIN_PASSWORD='admin',DEV_ADMIN_EMAIL='qa-dev@example.com',RAZORPAY_KEY_ID='rzp_test_localQA',RAZORPAY_KEY_SECRET='test')
 from discovery import normalized,matches,filter_options,blank_metadata_patch
 import server
 
@@ -102,7 +102,7 @@ def test_excel_preview_only(api,auth):
 
 def test_order_prices_still_authoritative(api,monkeypatch):
     captured=[]
-    def create(data):captured.append(data);return {'id':'order_qa_'+uuid.uuid4().hex}
+    def create(data, **kwargs):captured.append(data);return {'id':'order_qa_'+uuid.uuid4().hex}
     monkeypatch.setattr(server.razorpay_client.order,'create',create)
     p=api.get('/api/products?limit=1').json()['items'][0]
     for v in p['sizes']:
@@ -112,7 +112,7 @@ def test_order_prices_still_authoritative(api,monkeypatch):
 
 def test_order_request_id_is_idempotent_and_shipping_split(api,monkeypatch):
     captured=[]
-    def create(data):captured.append(data);return {'id':'order_qa_'+uuid.uuid4().hex}
+    def create(data, **kwargs):captured.append(data);return {'id':'order_qa_'+uuid.uuid4().hex}
     monkeypatch.setattr(server.razorpay_client.order,'create',create)
     p=api.get('/api/products?limit=1').json()['items'][0];v=p['sizes'][0]
     body={'customer_name':'QA','customer_email':'qa@example.com','customer_phone':'9000000000','shipping_address':'Test only','shipping_city':'Test','shipping_state':'Test','shipping_pin':'123456','request_id':uuid.uuid4().hex,'items':[{'slug':p['slug'],'size':v['size'],'qty':1}]}
@@ -123,5 +123,5 @@ def test_order_request_id_is_idempotent_and_shipping_split(api,monkeypatch):
 def test_discovery_contracts(api):
     combos=api.get('/api/combos').json();sets=api.get('/api/discovery-sets').json()['items']
     all_sets=combos['tester_combos']+combos['special_offers']+sets
-    assert len(all_sets)==12 and len({s['slug'] for s in all_sets})==12
+    assert len(all_sets)==11 and len({s['slug'] for s in all_sets})==11
     assert all(s['title'] and s['subtitle'] and s['price']>0 and s['description'] for s in all_sets)

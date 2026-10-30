@@ -57,7 +57,7 @@ export const Navbar = () => {
             <div key={k} className="flex gap-12 px-6 shrink-0">
               <span>{shipping.enabled ? `Shipping from ₹${shipping.charge_below_threshold}` : "Free shipping"}</span>
               <span className="text-jlt-gold">•</span>
-              <span>750+ Premium-Inspired Scents</span>
+              <span>800+ Luxury Inspired Scents</span>
               <span className="text-jlt-gold">•</span>
               <span>Starting ₹449</span>
               <span className="text-jlt-gold">•</span>
@@ -121,7 +121,7 @@ export const Footer = () => (
     <div className="max-w-7xl mx-auto px-6 py-16 grid grid-cols-2 md:grid-cols-5 gap-10">
       <div className="col-span-2">
         <img src="/logo.jpg" alt="JLT Fragrances" className="h-24 w-auto object-contain bg-jlt-ivory p-2 inline-block" />
-        <div className="text-jlt-gold text-[0.7rem] tracking-[0.32em] uppercase mt-3">Smell Premium. Spend Smart.</div>
+        <div className="text-jlt-gold text-[0.7rem] tracking-[0.32em] uppercase mt-3">Smell Luxurious. Spend Smart.</div>
         <p className="mt-5 text-sm text-jlt-ivory/70 max-w-sm">Luxury-inspired fragrances crafted for everyday confidence. Premium oils, Pan India delivery, starting ₹499.</p>
         <div className="flex gap-4 mt-6">
           <a href={INSTAGRAM_URL} target="_blank" rel="noreferrer" className="line-hover" data-testid="footer-instagram">Instagram</a>

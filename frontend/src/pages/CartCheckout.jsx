@@ -3,22 +3,22 @@ import { Link, useNavigate } from "react-router-dom";
 import { Minus, Plus, Trash2, ShoppingBag, Heart } from "lucide-react";
 import { useCart, useWish } from "../lib/store";
 import http from "../lib/api";
-import { useShippingSettings, computeShipping } from "../lib/shipping";
+import { loadPaymentCheckout } from "../lib/payment";
+
 
 const PIN_RE = /^[1-9][0-9]{5}$/;
 const PHONE_RE = /^[6-9][0-9]{9}$/;
 const newRequestId = () => (window.crypto?.randomUUID ? window.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`);
 
 export const Cart = () => {
-  const { cart, removeFromCart, updateQty, cartTotal, clearCart } = useCart();
-  const shippingSettings = useShippingSettings();
-  const shippingFee = computeShipping(cartTotal, shippingSettings);
+  const { cart, removeFromCart, updateQty, cartTotal, clearCart, pricingReady, pricingError, cartShipping } = useCart();
+  const shippingFee = cartShipping;
   const nav = useNavigate();
   if (cart.length === 0) return (
     <div className="max-w-3xl mx-auto px-6 py-20 text-center" data-testid="cart-empty">
       <ShoppingBag size={40} className="mx-auto text-jlt-gold" />
       <h1 className="font-display text-4xl mt-4">Your cart is empty</h1>
-      <p className="text-sm text-jlt-black/60 mt-2">Discover our 750+ premium-inspired scents.</p>
+      <p className="text-sm text-jlt-black/60 mt-2">Discover our 800+ Luxury Inspired Scents.</p>
       <Link to="/shop" className="btn-primary mt-6 inline-flex">Shop Fragrances</Link>
     </div>
   );
@@ -26,6 +26,7 @@ export const Cart = () => {
   return (
     <div className="max-w-6xl mx-auto px-6 py-12" data-testid="cart-page">
       <h1 className="font-display text-4xl">Your Cart</h1>
+      {!pricingReady && <p role="status" className="mt-3">{pricingError || "Checking current prices…"}</p>}
       <div className="grid md:grid-cols-[1fr_360px] gap-8 mt-8">
         <div className="space-y-3">
           {cart.map((i) => (
@@ -33,8 +34,9 @@ export const Cart = () => {
               <div className="bottle-card w-20 h-24 shrink-0 flex items-end justify-center p-2"><div className="bottle-silhouette w-3/4 h-4/5"/></div>
               <div className="flex-1">
                 <div className="text-[0.65rem] tracking-[0.25em] uppercase text-jlt-gold">Inspired by {i.brand}</div>
-                <Link to={`/product/${i.slug}`} className="font-display text-lg">{i.name}</Link>
+                <Link to={i.brand === "JLT Fragrances" ? "/discovery-sets" : `/product/${i.slug}`} className="font-display text-lg">{i.name}</Link>
                 <div className="text-xs text-jlt-black/60">{i.size} · ₹{i.price}</div>
+                {i.selected_products?.length > 0 && <p className="text-xs mt-1">{i.selected_products.map(p => p.name).join(", ")}</p>}
                 <div className="flex items-center gap-2 mt-2">
                   <button onClick={() => updateQty(i.key, i.qty - 1)} className="w-7 h-7 border border-jlt-black/20 flex items-center justify-center" data-testid={`qty-dec-${i.slug}`}><Minus size={14}/></button>
                   <span className="w-8 text-center" data-testid={`qty-${i.slug}`}>{i.qty}</span>
@@ -53,7 +55,7 @@ export const Cart = () => {
           <div className="flex justify-between mt-4 text-sm"><span>Subtotal</span><span>₹{cartTotal}</span></div>
           <div className="flex justify-between text-sm"><span>Shipping</span><span>{shippingFee ? `₹${shippingFee}` : "FREE"}</span></div>
           <div className="border-t border-jlt-black/10 mt-4 pt-4 flex justify-between font-display text-xl"><span>Total</span><span>₹{cartTotal + shippingFee}</span></div>
-          <button onClick={() => nav("/checkout")} className="btn-primary w-full justify-center mt-5" data-testid="checkout-btn">Checkout</button>
+          <button disabled={!pricingReady} onClick={() => nav("/checkout")} className="btn-primary w-full justify-center mt-5" data-testid="checkout-btn">Checkout</button>
           <button onClick={clearCart} className="text-xs text-jlt-black/50 mt-3 w-full text-center" data-testid="clear-cart">Clear cart</button>
         </aside>
       </div>
@@ -91,9 +93,8 @@ export const Wishlist = () => {
 };
 
 export const Checkout = () => {
-  const { cart, cartTotal, clearCart } = useCart();
+  const { cart, cartTotal, clearCart, pricingReady, pricingError, cartShipping } = useCart();
   const nav = useNavigate();
-  const shippingSettings = useShippingSettings();
   const requestIdRef = React.useRef(newRequestId());
   const submittingRef = React.useRef(false);
   const [form, setForm] = React.useState({
@@ -113,18 +114,9 @@ export const Checkout = () => {
   const [paymentId, setPaymentId] = React.useState("");
   const [paidTotal, setPaidTotal] = React.useState(null);
 
-  // Load Razorpay script
-  React.useEffect(() => {
-    const script = document.createElement("script");
-    script.src = "https://checkout.razorpay.com/v1/checkout.js";
-    script.async = true;
-    document.body.appendChild(script);
-    return () => document.body.removeChild(script);
-  }, []);
-
   const submit = async (e) => {
     e.preventDefault();
-    if (submittingRef.current) return;
+    if (submittingRef.current || !pricingReady) return;
     const phone = form.phone.replace(/[\s-]/g, "").replace(/^(\+91|91)(?=[6-9]\d{9}$)/, "");
     if (!PHONE_RE.test(phone)) return setError("Please enter a valid 10-digit mobile number.");
     if (!PIN_RE.test(form.pin.trim())) return setError("Please enter a valid 6-digit PIN code.");
@@ -133,6 +125,7 @@ export const Checkout = () => {
     setError("");
 
     try {
+      await loadPaymentCheckout();
       // Step 1: Create order on backend
       const createOrderRes = await http.post("/orders", {
         customer_name: form.name.trim(),
@@ -145,6 +138,7 @@ export const Checkout = () => {
         request_id: requestIdRef.current,
         items: cart.map((item) => ({
           slug: item.slug,
+          selections: item.selections || [],
           name: item.name,
           brand: item.brand,
           size: item.size,
@@ -225,14 +219,14 @@ export const Checkout = () => {
       const rzp = new window.Razorpay(options);
       rzp.open();
     } catch (err) {
-      setError(err.response?.data?.detail && typeof err.response.data.detail === "string" ? err.response.data.detail : "We could not start your payment. Please check your details and try again.");
+      setError(err.response?.data?.detail && typeof err.response.data.detail === "string" ? err.response.data.detail : (!err.response && err.message && !err.isAxiosError ? err.message : "We could not start your payment. Please check your details and try again."));
       submittingRef.current = false;
       setLoading(false);
     }
   };
 
   if (placed && orderData) {
-    const displayTotal = paidTotal ?? (orderData.total_amount ? orderData.total_amount / 100 : (cartTotal + computeShipping(cartTotal, shippingSettings)));
+    const displayTotal = paidTotal ?? (orderData.total_amount ? orderData.total_amount / 100 : (cartTotal + cartShipping));
     return (
       <div className="max-w-2xl mx-auto px-6 py-20 text-center" data-testid="order-placed">
         <h1 className="font-display text-4xl">✓ Order Confirmed!</h1>
@@ -259,7 +253,7 @@ export const Checkout = () => {
     );
   }
 
-  const total = cartTotal + computeShipping(cartTotal, shippingSettings);
+  const total = cartTotal + cartShipping;
 
   return (
     <div className="max-w-6xl mx-auto px-6 py-12" data-testid="checkout-page">
@@ -280,7 +274,7 @@ export const Checkout = () => {
             required
             value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })}
-            disabled={loading}
+            disabled={loading || !pricingReady}
           />
           <div className="grid grid-cols-2 gap-3">
             <input
@@ -290,7 +284,7 @@ export const Checkout = () => {
               required
               value={form.email}
               onChange={(e) => setForm({ ...form, email: e.target.value })}
-              disabled={loading}
+              disabled={loading || !pricingReady}
             />
             <input
               className="input-luxe"
@@ -298,7 +292,7 @@ export const Checkout = () => {
               required
               value={form.phone}
               onChange={(e) => setForm({ ...form, phone: e.target.value })}
-              disabled={loading}
+              disabled={loading || !pricingReady}
             />
           </div>
           <textarea
@@ -308,7 +302,7 @@ export const Checkout = () => {
             required
             value={form.address}
             onChange={(e) => setForm({ ...form, address: e.target.value })}
-            disabled={loading}
+            disabled={loading || !pricingReady}
           />
           <div className="grid grid-cols-3 gap-3">
             <input
@@ -317,7 +311,7 @@ export const Checkout = () => {
               required
               value={form.city}
               onChange={(e) => setForm({ ...form, city: e.target.value })}
-              disabled={loading}
+              disabled={loading || !pricingReady}
             />
             <input
               className="input-luxe"
@@ -325,7 +319,7 @@ export const Checkout = () => {
               required
               value={form.state}
               onChange={(e) => setForm({ ...form, state: e.target.value })}
-              disabled={loading}
+              disabled={loading || !pricingReady}
             />
             <input
               className="input-luxe"
@@ -333,7 +327,7 @@ export const Checkout = () => {
               required
               value={form.pin}
               onChange={(e) => setForm({ ...form, pin: e.target.value })}
-              disabled={loading}
+              disabled={loading || !pricingReady}
             />
           </div>
           <div className="text-[0.7rem] tracking-[0.3em] uppercase text-jlt-gold mt-4">Payment Method</div>
@@ -367,10 +361,11 @@ export const Checkout = () => {
               <span>₹{total}</span>
             </div>
           </div>
+          {!pricingReady && <p role="status">{pricingError || "Checking current prices…"}</p>}
           <button
             className="btn-primary w-full justify-center mt-5 disabled:opacity-50 disabled:cursor-not-allowed"
             data-testid="place-order"
-            disabled={loading}
+            disabled={loading || !pricingReady}
           >
             {loading ? "Processing..." : "Place Order & Pay"}
           </button>
