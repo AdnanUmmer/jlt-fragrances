@@ -16,7 +16,7 @@ export default function Shop(){
   useEffect(()=>{const controller=new AbortController();setFilterError('');http.get('/products/filters',{signal:controller.signal}).then(r=>setFilters(r.data)).catch(e=>{if(e.code!=='ERR_CANCELED')setFilterError('Filters could not load.');});return()=>controller.abort();},[retry]);
   useEffect(()=>{
     const controller=new AbortController();setLoading(true);setError('');const qp=new URLSearchParams(query);qp.set('limit','24');
-    http.get(`/products?${qp}`,{signal:controller.signal}).then(r=>setData(r.data)).catch(e=>{if(e.code!=='ERR_CANCELED')setError(typeof e.response?.data?.detail==='string'?e.response.data.detail:"We couldn't load the fragrances. Please try again.");}).finally(()=>{if(!controller.signal.aborted)setLoading(false);});
+    http.get(`/products?${qp}`,{signal:controller.signal}).then(r=>{if(!controller.signal.aborted)setData(r.data);}).catch(e=>{if(!controller.signal.aborted&&e.code!=='ERR_CANCELED')setError(typeof e.response?.data?.detail==='string'?e.response.data.detail:"We couldn't load the fragrances. Please try again.");}).finally(()=>{if(!controller.signal.aborted)setLoading(false);});
     return()=>controller.abort();
   },[query,retry]);
   useEffect(()=>{if(open){dialog.current?.showModal();const old=document.body.style.overflow;document.body.style.overflow='hidden';return()=>{document.body.style.overflow=old;};}dialog.current?.close();},[open]);

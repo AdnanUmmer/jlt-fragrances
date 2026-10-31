@@ -4,6 +4,7 @@ No inventory, pricing, reviews, notes or factual performance claims are generate
 Both options and matching use this same representation (OR within, AND between).
 """
 import copy
+import math
 import re
 import unicodedata
 
@@ -24,6 +25,57 @@ def values(value):
                 if token:
                     result.setdefault(key(token), token)
     return list(result.values())
+
+
+# Homepage labels remain unchanged. These are read-only semantic aliases, not
+# database categories. Generic descriptions/names are deliberately not evidence.
+MOOD_RULES = {
+    'Fresh': 'fresh,citrus,aquatic,marine,green,green notes,bergamot,lemon,lime,grapefruit,orange,mandarin,mandarin orange,neroli,mint,water notes,sea notes,sea salt',
+    'Sweet': 'sweet,gourmand,vanilla,caramel,honey,chocolate,cacao,cocoa,praline,tonka bean,sugar,sweet fruity,fruity sweet',
+    'Oud': 'oud,agarwood,agarwood (oud),oud accord,oud-based woody,oud-based amber,oud-based oriental,woody oud,amber oud,oriental oud',
+    'Floral': 'floral,white floral,white flowers,rose,bulgarian rose,turkish rose,damask rose,jasmine,jasmine sambac,peony,lily,lily of the valley,tuberose,lavender,orange blossom,ylang-ylang,geranium,magnolia,iris,violet,osmanthus',
+    'Clean': 'clean,clean musk,soapy,soap,powdery,powdery notes,fresh linen,linen,soft fresh,clean aquatic,aldehydes,cotton',
+    'Spicy': 'spicy,warm spicy,fresh spicy,cinnamon,pepper,black pepper,pink pepper,cardamom,clove,cloves,saffron,spicy amber,nutmeg,ginger,coriander',
+    'Musky': 'musky,musk,white musk,soft musk,powdery musk,clean musk,musk accord',
+}
+MOOD_ALIASES = {key(name): set(tokens.split(',')) for name, tokens in MOOD_RULES.items()}
+
+
+def available_sizes(product):
+    return [s for s in product.get('sizes', []) if isinstance(s, dict) and s.get('size') and
+            s.get('in_stock') is not False and type(s.get('price')) in (int, float) and
+            math.isfinite(s['price']) and s['price'] > 0]
+
+
+def mood_available(product):
+    return product.get('is_active') is not False and product.get('in_stock') is not False and bool(available_sizes(product))
+
+
+def mood_score(product, mood):
+    """Exact mood > related metadata/family > explicit notes. Zero means no evidence.
+
+    Accept raw or normalized documents, including legacy top/heart/base fields.
+    Unknown mood names retain the pre-existing exact-match behavior.
+    """
+    wanted = key(mood)
+    actual_moods = {key(v) for v in values(product.get('moods'))}
+    if wanted in actual_moods:
+        return 300
+    aliases = MOOD_ALIASES.get(wanted)
+    if not aliases:
+        return 0
+    families = {key(v) for v in values(product.get('scent_family'))}
+    if aliases & (families | actual_moods):
+        return 200
+    notes = product.get('notes') if isinstance(product.get('notes'), dict) else {}
+    entries = [*values(notes.get('top') or product.get('top_notes')),
+               *values(notes.get('heart') or notes.get('middle') or product.get('heart_notes') or product.get('middle_notes')),
+               *values(notes.get('base') or product.get('base_notes'))]
+    return 100 if aliases & {key(v) for v in entries} else 0
+
+
+def selected_mood_score(product, moods):
+    return max((mood_score(product, mood) for mood in moods), default=0)
 
 
 def normalized(p):
@@ -68,7 +120,12 @@ FIELDS = {'brand':'brand_inspiration','category':'category','tier':'pricing_tier
 
 
 def matches(p, selected, q='', min_price=None, max_price=None, bestseller=None, new_arrival=None, niche=None):
+    moods = selected.get('mood') or []
+    if moods and (not mood_available(p) or not selected_mood_score(p, moods)):
+        return False
     for group,field in FIELDS.items():
+        if group == 'mood':
+            continue
         wanted = {key(x) for x in (selected.get(group) or []) if key(x)}
         actual = {key(x) for x in (p.get(field) if isinstance(p.get(field),list) else [p.get(field)])}
         if wanted and not (wanted & actual):
@@ -84,7 +141,7 @@ def matches(p, selected, q='', min_price=None, max_price=None, bestseller=None, 
     if (wanted_sizes or min_price is not None or max_price is not None) and not any(
         (not wanted_sizes or key(s['size']) in wanted_sizes) and
         (min_price is None or s['price'] >= min_price) and
-        (max_price is None or s['price'] <= max_price) for s in p['sizes']):
+        (max_price is None or s['price'] <= max_price) for s in (available_sizes(p) if moods else p['sizes'])):
         return False
     if q and key(q):
         text = ' '.join(str(p.get(k) or '') for k in ('name','brand_inspiration','description','category','pricing_tier','smells_like'))
@@ -105,6 +162,11 @@ def filter_options(products):
             for v in p.get(field,[]) if isinstance(p.get(field),list) else [p.get(field)]:
                 if key(v): unique.setdefault(key(v), str(v).strip())
         result[name] = sorted(unique.values(),key=key)
+    sellable = [p for p in products if mood_available(p)]
+    mood_names = {key(v): v for p in sellable for v in values(p.get('moods'))}
+    mood_names.update({key(v): v for v in MOOD_RULES if any(mood_score(p, v) for p in sellable)})
+    result['moods'] = sorted(mood_names.values(), key=key)
+    result['mood_counts'] = {name: sum(bool(mood_score(p, name)) for p in sellable) for name in result['moods']}
     notes, sizes = {}, {}
     prices=[]
     for p in products:

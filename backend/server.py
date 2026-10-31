@@ -35,7 +35,7 @@ from pydantic import BaseModel, Field, EmailStr
 from openpyxl import load_workbook
 
 from seed_helpers import build_product, slugify, SIZES
-from discovery import normalized, matches, filter_options, key
+from discovery import normalized, matches, filter_options, key, selected_mood_score, available_sizes
 from quiz import inventory, matching, choices, recommendations, STEPS
 from offers import COMBOS, DISCOVERY_SETS
 import quick_quiz
@@ -533,7 +533,7 @@ async def list_products(
     products = [normalized(p) for p in await db.products.find({"is_active": {"$ne": False}}, {"_id":0}).to_list(None)]
     items = [p for p in products if matches(p,selected,q,min_price,max_price,bestseller,new_arrival,niche)]
     def available_price(p):
-        variants = [s["price"] for s in p["sizes"] if not size or key(s["size"]) in {key(v) for v in size}]
+        variants = [s["price"] for s in (available_sizes(p) if mood else p["sizes"]) if not size or key(s["size"]) in {key(v) for v in size}]
         return min(variants, default=0)
     if sort in ("price_asc","price_desc"):
         items.sort(key=lambda p: (available_price(p), key(p["name"])), reverse=sort=="price_desc")
@@ -542,7 +542,7 @@ async def list_products(
     elif sort=="new":
         items.sort(key=lambda p: (not p.get("is_new_arrival"), key(p["name"])))
     else:
-        items.sort(key=lambda p: (not p.get("is_bestseller"), -(p.get("rating") or 0), key(p["name"]),p["slug"]))
+        items.sort(key=lambda p: (-selected_mood_score(p, mood or []), not p.get("is_bestseller"), -(p.get("rating") or 0), key(p["name"]),p["slug"]))
     total=len(items)
     return {"items":items[(page-1)*limit:page*limit], "total":total,"page":page,"limit":limit}
 
