@@ -39,7 +39,7 @@ const Home = () => {
           <div className="fade-in">
             <div className="text-[0.7rem] tracking-[0.32em] uppercase text-jlt-gold">Just Like That — Luxury-Inspired</div>
             <h1 className="font-display text-5xl sm:text-6xl lg:text-7xl mt-4 leading-[0.95]">
-              Smell Premium.<br /><span className="shimmer-text">Spend Smart.</span>
+              Smell Luxurious.<br /><span className="shimmer-text">Spend Smart.</span>
             </h1>
             <p className="mt-6 text-base sm:text-lg text-jlt-black/75 max-w-xl">
               Explore 800+ Luxury Inspired Scents crafted with premium oils, starting at ₹449.

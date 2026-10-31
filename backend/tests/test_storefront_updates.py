@@ -24,7 +24,7 @@ os.environ.update(MONGO_URL='mongodb://127.0.0.1:27017', DB_NAME='jlt_update_tes
                   RAZORPAY_KEY_ID='rzp_test_localQA', RAZORPAY_KEY_SECRET='local-test-secret',
                   RAZORPAY_MODE='test', ENABLE_DEV_ADMIN='false')
 import server
-from quiz import STEPS, choices, inventory, matching
+from quiz import STEPS, choices, inventory, matching, recommendations
 
 
 @pytest.fixture(scope='module')
@@ -108,6 +108,8 @@ def test_all_inventory_quiz_paths_and_missing_attributes():
         options = choices(remaining, step)
         assert options
         for option in options:
+            if option['count'] == 0:
+                continue
             next_answers = {**answers, step: option['value']}
             matches = matching(products, next_answers)
             assert len(matches) == option['count'] > 0
@@ -116,15 +118,96 @@ def test_all_inventory_quiz_paths_and_missing_attributes():
     assert paths > 0
 
 
+def test_occasion_is_first_and_filters_later_choices():
+    products = inventory([
+        {'slug': 'wedding', 'occasions': ['Wedding'], 'notes': {'heart': ['Amber']}, 'projection': 'Moderate',
+         'sizes': [{'size': '20ml', 'price': 1000}]},
+        {'slug': 'daily', 'occasions': ['Daily Wear'], 'notes': {'heart': ['Citrus']}, 'projection': 'Soft',
+         'sizes': [{'size': '20ml', 'price': 1000}]},
+    ])
+    assert STEPS == ('occasion', 'note', 'projection', 'budget')
+    occasion_options = {option['label']: option for option in choices(products, STEPS[0])}
+    assert occasion_options['Wedding']['count'] == 1
+    assert occasion_options['Party']['count'] == 0
+
+    wedding_matches = matching(products, {'occasion': 'Wedding'})
+    assert [option['label'] for option in choices(wedding_matches, 'note')] == ['Amber']
+    assert matching(wedding_matches, {'note': 'Amber'}) == wedding_matches
+
+
+def test_catalogue_quiz_filters_and_recommendations_use_real_attributes():
+    raw = json.loads((ROOT / 'qa-before-products.json').read_text(encoding='utf-8'))
+    products = inventory(raw)
+    wedding = matching(products, {'occasion': 'Wedding'})
+    daily = matching(products, {'occasion': 'Daily Wear'})
+    assert wedding and daily
+    assert {p['slug'] for p in wedding} != {p['slug'] for p in daily}
+
+    wedding_notes = choices(wedding, 'note')
+    assert len(wedding_notes) <= 12
+    assert {'Amber', 'Rose', 'Agarwood', 'Oud'} <= {option['label'] for option in wedding_notes}
+    assert 'Fresh' in {option['label'] for option in choices(daily, 'note')}
+    actual_wedding_notes = {
+        str(note).casefold()
+        for product in wedding
+        for level in product['notes'].values()
+        for note in level
+    }
+    actual_wedding_notes.update(
+        str(family).casefold() for product in wedding for family in product['scent_family']
+    )
+    assert all(option['label'].casefold() in actual_wedding_notes for option in wedding_notes)
+
+    amber_wedding = matching(wedding, {'note': 'Amber'})
+    assert amber_wedding and len(amber_wedding) < len(wedding)
+    assert all(any(str(note).casefold() == 'amber' for level in product['notes'].values() for note in level)
+               for product in amber_wedding)
+    amber_daily = matching(daily, {'note': 'Amber'})
+    common_projection = next(
+        option['value'] for option in choices(amber_wedding, 'projection')
+        if option['count'] and any(
+            other['value'] == option['value'] and other['count']
+            for other in choices(amber_daily, 'projection')
+        )
+    )
+    budget = 649
+    wedding_results = recommendations(products, {
+        'occasion': 'Wedding', 'note': 'Amber', 'projection': common_projection, 'budget': budget,
+    })
+    daily_results = recommendations(products, {
+        'occasion': 'Daily Wear', 'note': 'Amber', 'projection': common_projection, 'budget': budget,
+    })
+    assert wedding_results and daily_results
+    assert {p['slug'] for p in wedding_results} != {p['slug'] for p in daily_results}
+    for product in wedding_results + daily_results:
+        match = product['quiz_match']
+        assert match['price'] <= budget
+        assert any(size['size'] == match['size'] and size['price'] == match['price']
+                   for size in product['sizes'])
+        assert any(reason.startswith('Tagged for ') for reason in match['reasons'])
+        assert any('Amber' in reason for reason in match['reasons'])
+
+
 def test_quiz_api_and_stale_path(api):
     client, _ = api
     answers = {}
     for step in STEPS:
-        response = client.post('/api/quiz/options', json=answers).json()
+        response = client.post('/api/quiz/options', json={**answers, 'flow': 'legacy'}).json()
         assert response['step'] == step
-        answers[step] = response['options'][0]['value']
-    assert client.post('/api/quiz/recommend', json=answers).json()['items']
-    assert client.post('/api/quiz/options', json={'scent': 'nonexistent'}).json()['options'] == []
+        answers[step] = next(option['value'] for option in response['options'] if option['count'] > 0)
+    result = client.post('/api/quiz/recommend', json={**answers, 'flow': 'legacy'}).json()
+    assert result['items'] and result['items'][0]['quiz_match']['reasons']
+    product = result['items'][0]
+    if product.get('scent_family') and product.get('gender'):
+        legacy = client.post('/api/quiz/recommend', json={
+            'occasion': answers['occasion'],
+            'scent': product['scent_family'][0],
+            'projection': product['projection'],
+            'budget': max(size['price'] for size in product['sizes']),
+            'gender': product['gender'],
+        })
+        assert legacy.status_code == 200
+    assert client.post('/api/quiz/options', json={'occasion': 'nonexistent', 'flow': 'legacy'}).json()['options'] == []
     assert client.post('/api/quiz/recommend', json={}).status_code == 422
 
 

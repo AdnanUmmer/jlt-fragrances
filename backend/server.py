@@ -16,11 +16,11 @@ import uuid
 import logging
 import hmac
 import hashlib
-import smtplib
+import asyncio
+import contextlib
 import re
-from email.message import EmailMessage
 from datetime import datetime, timezone, timedelta
-from typing import List, Optional
+from typing import List, Optional, Literal
 
 import bcrypt
 import jwt
@@ -36,8 +36,10 @@ from openpyxl import load_workbook
 
 from seed_helpers import build_product, slugify, SIZES
 from discovery import normalized, matches, filter_options, key
-from quiz import inventory, matching, choices, STEPS
+from quiz import inventory, matching, choices, recommendations, STEPS
 from offers import COMBOS, DISCOVERY_SETS
+import quick_quiz
+import order_email
 import copy
 from starlette.concurrency import run_in_threadpool
 
@@ -130,8 +132,14 @@ class ContactRequest(BaseModel):
 
 
 class QuizRequest(BaseModel):
+    flow: Literal['quick', 'legacy'] = 'quick'
+    family: Optional[str] = None
+    intensity: Optional[str] = None
+    audience: Optional[str] = None
+    spend: Optional[str] = None
     scent: Optional[str] = None
     occasion: Optional[str] = None
+    note: Optional[str] = None
     projection: Optional[str] = None
     budget: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
     gender: Optional[str] = None
@@ -491,95 +499,11 @@ def format_inr(amount_paise: int) -> str:
 
 
 def send_admin_order_email(order_data: dict) -> bool:
-    """Send admin order notification email for confirmed orders."""
-    smtp_host = os.environ.get("SMTP_HOST", "").strip()
-    smtp_port = os.environ.get("SMTP_PORT", "").strip()
-    smtp_user = os.environ.get("SMTP_USER", "").strip()
-    smtp_password = os.environ.get("SMTP_PASSWORD", "").strip()
-    email_from = os.environ.get("EMAIL_FROM", "").strip()
-    email_to = os.environ.get("EMAIL_TO", "").strip()
-
-    if not (smtp_host and smtp_port and smtp_user and smtp_password and email_from and email_to):
-        log.error("SMTP configuration is incomplete, admin order email skipped")
-        return False
-
-    try:
-        port = int(smtp_port)
-    except ValueError:
-        log.error("SMTP_PORT must be an integer, admin order email skipped")
-        return False
-
-    subject = f"New Order Received - {order_data.get('order_id')}"
-    body_lines = [
-        f"Order ID: {order_data.get('order_id')}",
-        f"Date & Time: {order_data.get('created_at')}",
-        f"Customer Name: {order_data.get('customer_name')}",
-        f"Customer Email: {order_data.get('customer_email')}",
-        f"Customer Phone: {order_data.get('customer_phone')}",
-        "",
-        "Shipping Address:",
-        f"{order_data.get('shipping_address')}",
-        f"{order_data.get('shipping_city')}, {order_data.get('shipping_state')} {order_data.get('shipping_pin')}",
-        "",
-        f"Payment Method: {order_data.get('payment_method', 'Razorpay')}",
-        f"Payment Status: {order_data.get('payment_status', 'paid').upper()}",
-        f"Razorpay Payment ID: {order_data.get('razorpay_payment_id') or 'N/A'}",
-        f"Razorpay Order ID: {order_data.get('razorpay_order_id') or 'N/A'}",
-        "",
-        "Items:",
-    ]
-
-    for item in order_data.get("items", []):
-        unit_price = item.get("price", 0)
-        qty = item.get("qty", 0)
-        line_total = unit_price * qty
-        body_lines.append(
-            f"- {item.get('name')} | Brand: {item.get('brand')} | Size: {item.get('size')} | Quantity: {qty} | Unit Price: {format_inr(unit_price)} | Line Total: {format_inr(line_total)}"
-        )
-
-    body_lines.extend([
-        "",
-        f"Grand Total: {format_inr(order_data.get('total_amount', 0))}",
-    ])
-
-    message = EmailMessage()
-    message["From"] = email_from
-    message["To"] = email_to
-    message["Subject"] = subject
-    message.set_content("\n".join(body_lines))
-
-    try:
-        if port == 465:
-            server = smtplib.SMTP_SSL(smtp_host, port, timeout=10)
-        else:
-            server = smtplib.SMTP(smtp_host, port, timeout=10)
-            server.starttls()
-
-        with server:
-            server.login(smtp_user, smtp_password)
-            server.send_message(message)
-
-        log.info(
-            "Admin order email sent",
-            extra={
-                "order_id": order_data.get("order_id"),
-                "recipient": email_to,
-            },
-        )
-        return True
-    except Exception as e:
-        log.error(
-            "Admin order email failed",
-            extra={
-                "order_id": order_data.get("order_id"),
-                "error": str(e),
-            },
-        )
-        return False
+    # Compatibility helper; confirmed orders are dispatched by the durable worker.
+    return order_email.smtp_send(order_data)['status'] == 'sent'
 
 
 async def send_admin_order_email_async(order_data: dict) -> bool:
-    import asyncio
     return await asyncio.to_thread(send_admin_order_email, order_data)
 
 
@@ -714,6 +638,14 @@ async def quiz_inventory():
 @api.post("/quiz/options")
 async def quiz_options(body: QuizRequest):
     answers = body.model_dump(exclude_none=True)
+    if body.flow == 'quick':
+        selected = {k: v for k, v in answers.items() if k in quick_quiz.STEPS}
+        if not quick_quiz.validate(selected):
+            raise HTTPException(422, "Please choose one of the available answers.")
+        try:
+            return quick_quiz.options(await quiz_inventory(), selected)
+        except ValueError:
+            raise HTTPException(422, "All questions are answered; request recommendations.")
     prefix = {}
     for step in STEPS:
         if step not in answers:
@@ -726,10 +658,19 @@ async def quiz_options(body: QuizRequest):
 @api.post("/quiz/recommend")
 async def quiz_recommend(body: QuizRequest):
     answers = body.model_dump(exclude_none=True)
-    if set(answers) != set(STEPS):
-        raise HTTPException(422, "Complete all five quiz questions.")
-    items = matching(await quiz_inventory(), answers)
-    items.sort(key=lambda p: (-(p.get("rating") or 0), not p.get("is_bestseller")))
+    products = await quiz_inventory()
+    if body.family is not None:
+        selected = {k: v for k, v in answers.items() if k in quick_quiz.STEPS}
+        if not set(quick_quiz.STEPS).issubset(selected) or not quick_quiz.validate(selected):
+            raise HTTPException(422, "Complete the five quick quiz questions.")
+        return quick_quiz.recommend(products, selected)
+    if set(STEPS).issubset(answers):
+        items = recommendations(products, answers)
+    elif {'scent', 'occasion', 'projection', 'budget', 'gender'}.issubset(answers):
+        items = matching(products, answers)
+        items.sort(key=lambda product: (-(product.get("rating") or 0), not product.get("is_bestseller")))
+    else:
+        raise HTTPException(422, "Complete all four quiz questions.")
     return {"items": items[:12], "total": len(items)}
 
 
@@ -1157,7 +1098,6 @@ async def create_order(body: CreateOrderRequest):
             extra={
                 "order_id": order_id,
                 "razorpay_order_id": razorpay_order["id"],
-                "customer_email": body.customer_email,
                 "total_amount": total_amount,
             },
         )
@@ -1186,110 +1126,75 @@ async def create_order(body: CreateOrderRequest):
         raise HTTPException(status_code=500, detail="Failed to create order")
 
 
+async def confirm_captured_payment(razorpay_order_id, payment_id, signature=None):
+    """One payment transition and one durable notification event, for both entry points."""
+    require_payment_configuration()
+    order = await db.orders.find_one({"razorpay_order_id": razorpay_order_id})
+    if not order:
+        raise HTTPException(404, "Order not found")
+    if order.get("payment_status") == "paid":
+        if order.get("razorpay_payment_id") != payment_id:
+            raise HTTPException(409, "Order is already paid")
+        return {"ok": True, "already_verified": True, "order_id": order["order_id"], "total_amount": order["total_amount"]}
+    try:
+        payment = await run_in_threadpool(razorpay_client.payment.fetch, payment_id, timeout=20)
+    except Exception as exc:
+        log.error("Payment lookup failed (%s)", type(exc).__name__)
+        raise HTTPException(503, "Unable to confirm payment right now. Please retry verification.")
+    if payment.get("order_id") != razorpay_order_id or payment.get("amount") != order["total_amount"] or payment.get("currency") != "INR":
+        raise HTTPException(400, "Payment does not match this order")
+    if payment.get("status") != "captured":
+        raise HTTPException(400, "Payment not captured")
+    now = datetime.now(timezone.utc).isoformat()
+    fields = {"payment_status": "paid", "payment_method": "Razorpay", "razorpay_payment_id": payment_id,
+              "paid_at": now, "updated_at": now, "order_email": order_email.pending_event()}
+    if not order.get("order_status"):
+        fields['order_status'] = 'confirmed'
+    if signature:
+        fields['razorpay_signature'] = signature
+    marked = await db.orders.update_one({"_id": order['_id'], "payment_status": {"$ne": "paid"}}, {"$set": fields})
+    if not marked.modified_count:
+        current = await db.orders.find_one({"_id": order['_id']})
+        if current.get('razorpay_payment_id') != payment_id:
+            raise HTTPException(409, "Order is already paid")
+    else:
+        # Email failure cannot affect this payment: delivery happens in a separate worker.
+        asyncio.create_task(send_telegram_notification({**order, **fields}))
+        log.info("Payment confirmed and email event persisted", extra={"order_id": order['order_id']})
+    return {"ok": True, "already_verified": not bool(marked.modified_count), "order_id": order['order_id'],
+            "message": "Payment verified and order confirmed", "total_amount": order['total_amount']}
+
+
 @api.post("/orders/verify-payment")
 async def verify_payment(body: PaymentVerifyRequest):
-    """Verify Razorpay payment and mark order as paid."""
     require_payment_configuration()
+    if not verify_razorpay_signature(body.razorpay_order_id, body.razorpay_payment_id, body.razorpay_signature):
+        raise HTTPException(400, "Invalid payment signature")
+    return await confirm_captured_payment(body.razorpay_order_id, body.razorpay_payment_id, body.razorpay_signature)
+
+
+@api.post("/webhooks/razorpay")
+async def razorpay_webhook(request: Request):
+    secret = os.environ.get('RAZORPAY_WEBHOOK_SECRET', '').strip()
+    if not secret:
+        raise HTTPException(503, "Webhook is not configured")
+    raw = await request.body()
+    expected = hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
+    supplied = request.headers.get('X-Razorpay-Signature', '')
+    if not hmac.compare_digest(expected, supplied):
+        raise HTTPException(400, "Invalid webhook signature")
     try:
-        log.info("Payment verification request received", extra={
-            "razorpay_order_id": body.razorpay_order_id,
-            "razorpay_payment_id": body.razorpay_payment_id,
-        })
-
-        # Verify signature
-        if not verify_razorpay_signature(body.razorpay_order_id, body.razorpay_payment_id, body.razorpay_signature):
-            log.warning("Invalid payment signature for razorpay_order_id=%s", body.razorpay_order_id)
-            raise HTTPException(status_code=400, detail="Invalid payment signature")
-        
-        # Find order by razorpay_order_id
-        order = await db.orders.find_one({"razorpay_order_id": body.razorpay_order_id})
-        if not order:
-            log.warning(f"Order not found: {body.razorpay_order_id}")
-            raise HTTPException(status_code=404, detail="Order not found")
-
-        if order.get("payment_status") == "paid":
-            if order.get("razorpay_payment_id") != body.razorpay_payment_id:
-                raise HTTPException(status_code=409, detail="Order is already paid")
-            return {"ok": True, "already_verified": True, "order_id": order.get("order_id"), "total_amount": order.get("total_amount"), "message": "Payment already confirmed"}
-        
-        # Verify payment with Razorpay API
-        try:
-            payment = await run_in_threadpool(razorpay_client.payment.fetch, body.razorpay_payment_id, timeout=20)
-            log.info("Razorpay payment fetched", extra={
-                "razorpay_payment_id": body.razorpay_payment_id,
-                "amount": payment.get("amount"),
-                "status": payment.get("status"),
-            })
-            if payment.get("order_id") != body.razorpay_order_id or payment.get("amount") != order.get("total_amount") or payment.get("currency") != "INR":
-                log.warning("Payment %s does not match order %s", body.razorpay_payment_id, body.razorpay_order_id)
-                raise HTTPException(status_code=400, detail="Payment does not match this order")
-            if payment.get("status") != "captured":
-                log.warning("Payment not captured for razorpay_payment_id=%s", body.razorpay_payment_id)
-                raise HTTPException(status_code=400, detail="Payment not captured")
-        except HTTPException:
-            raise
-        except Exception as e:
-            log.error("Razorpay verification failed (%s)", type(e).__name__)
-            raise HTTPException(status_code=500, detail="Payment verification failed")
-        
-        # Atomic transition so concurrent/repeated verifications confirm and notify only once
-        marked = await db.orders.update_one(
-            {"razorpay_order_id": body.razorpay_order_id, "payment_status": {"$ne": "paid"}},
-            {
-                "$set": {
-                    "payment_status": "paid",
-                    "razorpay_payment_id": body.razorpay_payment_id,
-                    "razorpay_signature": body.razorpay_signature,
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                }
-            }
-        )
-        if marked.modified_count == 0:
-            return {"ok": True, "already_verified": True, "order_id": order.get("order_id"), "total_amount": order.get("total_amount"), "message": "Payment already confirmed"}
-        
-        # Send Telegram notification (non-blocking)
-        order_data = {
-            "order_id": order.get("order_id"),
-            "razorpay_order_id": order.get("razorpay_order_id"),
-            "razorpay_payment_id": body.razorpay_payment_id,
-            "payment_method": "Razorpay",
-            "payment_status": "paid",
-            "customer_name": order.get("customer_name"),
-            "customer_email": order.get("customer_email"),
-            "customer_phone": order.get("customer_phone"),
-            "shipping_address": order.get("shipping_address"),
-            "shipping_city": order.get("shipping_city"),
-            "shipping_state": order.get("shipping_state"),
-            "shipping_pin": order.get("shipping_pin"),
-            "items": order.get("items", []),
-            "subtotal_amount": order.get("subtotal_amount"),
-            "shipping_amount": order.get("shipping_amount"),
-            "total_amount": order.get("total_amount"),
-            "created_at": order.get("created_at"),
-        }
-        
-        # Fire and forget - don't wait for notifications
-        import asyncio
-        asyncio.create_task(send_telegram_notification(order_data))
-        asyncio.create_task(send_admin_order_email_async(order_data))
-        
-        log.info("Payment verification completed and notifications queued", extra={
-            "order_id": order.get("order_id"),
-            "razorpay_order_id": order.get("razorpay_order_id"),
-            "razorpay_payment_id": body.razorpay_payment_id,
-        })
-        
-        return {
-            "ok": True,
-            "order_id": order.get("order_id"),
-            "message": "Payment verified and order confirmed",
-            "total_amount": order.get("total_amount"),
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        log.error("Payment verification failed (%s)", type(e).__name__)
-        raise HTTPException(status_code=500, detail="Payment verification failed")
+        event = json.loads(raw)
+        if event.get('event') not in {'payment.captured', 'order.paid'}:
+            return {'ok': True, 'ignored': True}
+        payment = event['payload']['payment']['entity']
+        payment_id, order_id = payment['id'], payment['order_id']
+        if not isinstance(payment_id, str) or not isinstance(order_id, str):
+            raise ValueError('Invalid references')
+    except (ValueError, KeyError, TypeError, AttributeError):
+        raise HTTPException(400, "Invalid webhook payload")
+    # Fetch from Razorpay as well; signed payloads alone do not bypass amount/currency checks.
+    return await confirm_captured_payment(order_id, payment_id)
 
 
 @api.get("/admin/orders")
@@ -1335,10 +1240,8 @@ async def startup():
     await db.orders.create_index("razorpay_order_id", unique=True)
     await db.orders.create_index("customer_email")
     await db.orders.create_index("payment_status")
-    try:
-        await db.orders.drop_index("created_at_1")
-    except Exception:
-        pass
+    # Preserve all existing indexes; add only the durable delivery lookup.
+    await db.orders.create_index([("order_email.status", 1), ("order_email.next_attempt_at", 1)])
 
     admin_email = os.environ["ADMIN_EMAIL"].lower()
     admin_password = os.environ["ADMIN_PASSWORD"]
@@ -1360,6 +1263,19 @@ async def startup():
             updates["password_hash"] = hash_password(dev_password)
         await db.users.update_one({"email":dev_email},{"$set":updates},upsert=True)
 
+    app.state.email_worker = None
+    if order_email.enabled() and os.environ.get('APP_ENV') != 'test':
+        issue = order_email.configuration_error()
+        if issue:
+            log.error("Order email configuration: %s", issue)
+        app.state.email_worker = asyncio.create_task(order_email.worker(db))
+
+
 @app.on_event("shutdown")
 async def shutdown():
+    task = getattr(app.state, 'email_worker', None)
+    if task:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
     client.close()
